@@ -1,3 +1,9 @@
+# 这一段不是AI
+
+俗话说说穷玩车 富玩表 只有XX玩电脑...
+好吧, 这个确实是为了玩电脑弄的, 需求很简单: 一个安装了 Linux/Windows/macOS 多系统的电脑, 希望能远程重启切换
+操作系统。所以这个玩意就诞生了
+
 # grub-set-default-macos-windows
 
 Read and change GRUB's saved default directly from Windows or macOS.
