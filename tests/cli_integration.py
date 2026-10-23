@@ -53,6 +53,21 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "override" in result.stdout and "[y/N]" not in result.stdout
     assert image.read_bytes() == pristine
     clean()
+    # Valid full environments must remain readable even if no saved_entry edit fits.
+    for prefix, padding, expected in (
+            (b"# GRUB Environment Block\ncustom=", 3, "(unset)"),
+            (b"# GRUB Environment Block\nsaved_entry=\ncustom=", 0, "(empty)")):
+        crowded = prefix + b"x" * (1024 - padding - len(prefix) - 1) + b"\n" + b"#" * padding
+        with image.open("r+b") as f:
+            f.seek(offset)
+            f.write(crowded)
+        before = image.read_bytes()
+        result = call("--image", str(image), "--show-default", answer="", env=env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"saved_entry={expected}\n" in result.stdout
+        assert "[y/N]" not in result.stdout and image.read_bytes() == before
+        clean()
+    image.write_bytes(pristine)
     result = call("--image", str(image), "--list-entries", answer="", env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert '0  entry  title="Debian GNU/Linux"  id="debian"' in result.stdout

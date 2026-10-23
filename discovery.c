@@ -80,7 +80,6 @@ static int probe_candidate(unsigned int disk, const PARTITION_INFORMATION_EX *pa
 {
     struct grub_location location;
     struct grub_candidate candidate, *grown;
-    unsigned char *replacement;
     char device[128], error[512];
     size_t i;
     int signature;
@@ -117,16 +116,12 @@ static int probe_candidate(unsigned int disk, const PARTITION_INFORMATION_EX *pa
                    disk, (unsigned long)partition->PartitionNumber, error);
             return 1;
         }
-        replacement = malloc(location.block_size);
-        if (!replacement) { grub_location_free(&location); return 0; }
-        memset(&candidate, 0, sizeof(candidate));
-        if (!grub_prepare(location.block, location.block_size, "0", replacement, &candidate.change,
-                           error, sizeof(error))) {
+        if (!grub_read_saved_entry(location.block, GRUB_ENV_SIZE, candidate.change.current,
+                                  error, sizeof(error))) {
             printf("Disk %u partition %lu: skipped: %s\n", disk,
                    (unsigned long)partition->PartitionNumber, error);
-            free(replacement); grub_location_free(&location); return 1;
+            grub_location_free(&location); return 1;
         }
-        free(replacement);
         grub_location_free(&location);
     }
     candidate.disk = disk;

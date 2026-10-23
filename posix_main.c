@@ -190,7 +190,6 @@ static int discover(const struct options *o, char path[PATH_MAX], char uuid[128]
         int linux_type, mounted;
         struct grub_location loc;
         struct grub_change change;
-        unsigned char *replacement;
         struct candidate *grown;
         const char *device = disks.devices[i];
         if (!valid_device(device) || (o->device && strcmp(o->device, device))) continue;
@@ -218,10 +217,8 @@ static int discover(const struct options *o, char path[PATH_MAX], char uuid[128]
             if (!grub_locate_at(device, o->env_path, &loc, error, sizeof(error))) {
                 fprintf(stderr, "%s: skipped: %s\n", device, error); continue;
             }
-            replacement = malloc(loc.block_size);
-            if (!replacement) { grub_location_free(&loc); incomplete = 1; break; }
-            result = grub_prepare(loc.block, loc.block_size, "0", replacement, &change, error, sizeof(error));
-            free(replacement); grub_location_free(&loc);
+            result = grub_read_saved_entry(loc.block, GRUB_ENV_SIZE, change.current, error, sizeof(error));
+            grub_location_free(&loc);
             if (!result) { fprintf(stderr, "%s: skipped: %s\n", device, error); continue; }
         }
         grown = realloc(items, (count + 1) * sizeof(*items));

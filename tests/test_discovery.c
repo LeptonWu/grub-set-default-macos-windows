@@ -15,6 +15,7 @@
 static const GUID linux_type =
     {0x0fc63daf, 0x8483, 0x4772, {0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4}};
 static int inaccessible, malformed, no_matches, invalid_environment, duplicate;
+static int full_environment;
 static int ext4_features = 1;
 static DWORD last_error;
 static unsigned int locate_calls, resizes;
@@ -152,6 +153,11 @@ int grub_locate_at(const char *device, const char *path, struct grub_location *l
     location->block = malloc(4096);
     memset(location->block, '#', 4096);
     memcpy(location->block, text, strlen(text));
+    if (full_environment) {
+        memset(location->block, 'x', GRUB_ENV_SIZE);
+        memcpy(location->block, "custom=", 7);
+        location->block[GRUB_ENV_SIZE - 1] = '\n';
+    }
     return 1;
 }
 void grub_location_free(struct grub_location *location) { free(location->block); }
@@ -166,6 +172,11 @@ int main(void)
     assert(items[0].disk == 0 && items[1].disk == 1);
     assert(items[0].partition == 3 && !strcmp(items[0].change.current, "2"));
     free(items);
+    full_environment = 1;
+    assert(grub_discover(&filter, &items, &count));
+    assert(count == 2 && !strcmp(items[0].change.current, "(unset)"));
+    free(items);
+    full_environment = 0;
     filter.have_disk = 1; filter.disk = 1;
     assert(grub_discover(&filter, &items, &count));
     assert(count == 1 && items[0].disk == 1); free(items);

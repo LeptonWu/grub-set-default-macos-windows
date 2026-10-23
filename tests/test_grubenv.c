@@ -70,7 +70,33 @@ int main(void)
     check_default("saved_entry=abc\033def\n", "saved_entry=abc\\x1bdef\n", 1);
     check_default("saved_entry=0\nsaved_entry=2\n", NULL, 0);
     check_default("saved_entry=0\n#bad padding", NULL, 0);
+    {
+        const char *prefixes[] = {
+            "# GRUB Environment Block\ncustom=",
+            "# GRUB Environment Block\nsaved_entry=\ncustom=",
+            "custom="
+        };
+        size_t i, padding;
+        for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+            for (padding = 0; padding <= 3; padding += 3) {
+                char full[GRUB_ENV_SIZE + 1], current[GRUB_ENV_SIZE], error[256];
+                size_t used = GRUB_ENV_SIZE - padding;
+                memset(full, 'x', used);
+                memcpy(full, prefixes[i], strlen(prefixes[i]));
+                full[used - 1] = '\n';
+                memset(full + used, '#', padding);
+                full[GRUB_ENV_SIZE] = 0;
+                /* Reading succeeds even when adding/changing saved_entry cannot fit. */
+                check_default(full, i == 1 ? "saved_entry=(empty)" : "saved_entry=(unset)", 1);
+                assert(grub_read_saved_entry((unsigned char *)full, GRUB_ENV_SIZE,
+                                             current, error, sizeof(error)));
+                assert(!strcmp(current, i == 1 ? "" : "(unset)"));
+                check(full, "test-entry", NULL, 0);
+            }
+        }
+    }
     puts("Passed 16 editor cases: numbers/titles/IDs/submenus, override removal, preserved variables/tail, no-op, malformed input and overflow rejection.");
     puts("Passed 7 read-only default cases: saved/next/previous values, titles/submenus, unset/empty values, control escaping and invalid environments.");
+    puts("Passed 6 capacity regressions: full/nearly full environments, unset/empty saved_entry, headerless input, unchanged reads and rejected oversized edits.");
     return 0;
 }

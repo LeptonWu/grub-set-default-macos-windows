@@ -8,29 +8,17 @@ static int fail(char *error, size_t size, const char *message)
     return 0;
 }
 
-int grub_prepare(const unsigned char *original, size_t block_size,
-                 const char *entry, unsigned char *replacement,
-                 struct grub_change *change, char *error, size_t error_size)
+/* Validate existing contents without proposing any edits or requiring space. */
+int grub_read_saved_entry(const unsigned char *original, size_t size,
+                          char current[GRUB_ENV_SIZE], char *error, size_t error_size)
 {
     static const char header[] = "# GRUB Environment Block\n";
-    unsigned char env[GRUB_ENV_SIZE];
     size_t starts[GRUB_ENV_SIZE / 3], lengths[GRUB_ENV_SIZE / 3], count = 0;
-    size_t pos = 0, used = 0, entry_size, i;
+    size_t pos = 0, i, saved_start = 0, saved_size = 0;
     int have_saved = 0;
-    struct grub_change result;
-    if (!original || !replacement || !change || !entry || block_size < GRUB_ENV_SIZE)
-        return fail(error, error_size, "Invalid environment buffer or menu entry.");
-    entry_size = strlen(entry);
-    if (!entry_size || entry_size >= GRUB_ENV_SIZE || strpbrk(entry, "\r\n"))
-        return fail(error, error_size, "Menu entry must be nonempty and contain no newline.");
-    memset(&result, 0, sizeof(result));
-    strcpy(result.current, "(unset)");
-    strcpy(result.target, entry);
-    memset(env, '#', sizeof(env));
-    if (!memcmp(original, header, sizeof(header) - 1)) {
-        used = pos = sizeof(header) - 1;
-        memcpy(env, header, used);
-    }
+    if (!original || size != GRUB_ENV_SIZE)
+        return fail(error, error_size, "Expected a 1024-byte GRUB environment.");
+    if (!memcmp(original, header, sizeof(header) - 1)) pos = sizeof(header) - 1;
     while (pos < GRUB_ENV_SIZE && original[pos] != '#') {
         size_t start = pos, equal, end, name_size;
         while (pos < GRUB_ENV_SIZE && original[pos] != '\n') {
@@ -51,6 +39,53 @@ int grub_prepare(const unsigned char *original, size_t block_size,
                 return fail(error, error_size, "Duplicate environment variable.");
         }
         starts[count] = start; lengths[count++] = name_size;
+        if (name_size == 11 && !memcmp(original + start, "saved_entry", 11)) {
+            saved_start = equal + 1;
+            saved_size = end - saved_start;
+            have_saved = 1;
+        }
+    }
+    for (; pos < GRUB_ENV_SIZE; pos++)
+        if (original[pos] != '#') return fail(error, error_size, "Invalid environment padding.");
+    if (current) {
+        if (have_saved) {
+            memcpy(current, original + saved_start, saved_size);
+            current[saved_size] = 0;
+        } else strcpy(current, "(unset)");
+    }
+    return 1;
+}
+
+int grub_prepare(const unsigned char *original, size_t block_size,
+                 const char *entry, unsigned char *replacement,
+                 struct grub_change *change, char *error, size_t error_size)
+{
+    static const char header[] = "# GRUB Environment Block\n";
+    unsigned char env[GRUB_ENV_SIZE];
+    size_t pos = 0, used = 0, entry_size;
+    int have_saved = 0;
+    struct grub_change result;
+    if (!original || !replacement || !change || !entry || block_size < GRUB_ENV_SIZE)
+        return fail(error, error_size, "Invalid environment buffer or menu entry.");
+    entry_size = strlen(entry);
+    if (!entry_size || entry_size >= GRUB_ENV_SIZE || strpbrk(entry, "\r\n"))
+        return fail(error, error_size, "Menu entry must be nonempty and contain no newline.");
+    memset(&result, 0, sizeof(result));
+    if (!grub_read_saved_entry(original, GRUB_ENV_SIZE, result.current, error, error_size)) return 0;
+    strcpy(result.target, entry);
+    memset(env, '#', sizeof(env));
+    if (!memcmp(original, header, sizeof(header) - 1)) {
+        used = pos = sizeof(header) - 1;
+        memcpy(env, header, used);
+    }
+    while (pos < GRUB_ENV_SIZE && original[pos] != '#') {
+        size_t start = pos, equal, name_size;
+        /* Validation above guarantees a terminated name=value record. */
+        while (original[pos] != '\n') pos++;
+        pos++;
+        equal = start;
+        while (original[equal] != '=') equal++;
+        name_size = equal - start;
         if (name_size == 10 && !memcmp(original + start, "next_entry", 10)) {
             result.cleared_next_entry = 1;
             continue;
@@ -60,9 +95,6 @@ int grub_prepare(const unsigned char *original, size_t block_size,
             continue;
         }
         if (name_size == 11 && !memcmp(original + start, "saved_entry", 11)) {
-            size_t value_size = end - equal - 1;
-            memcpy(result.current, original + equal + 1, value_size);
-            result.current[value_size] = 0;
             have_saved = 1;
             if (used + 12 + entry_size + 1 > GRUB_ENV_SIZE)
                 return fail(error, error_size, "New menu entry does not fit in grubenv.");
@@ -76,8 +108,6 @@ int grub_prepare(const unsigned char *original, size_t block_size,
             memcpy(env + used, original + start, size); used += size;
         }
     }
-    for (; pos < GRUB_ENV_SIZE; pos++)
-        if (original[pos] != '#') return fail(error, error_size, "Invalid environment padding.");
     if (!have_saved) {
         if (used + 12 + entry_size + 1 > GRUB_ENV_SIZE)
             return fail(error, error_size, "New menu entry does not fit in grubenv.");
@@ -96,14 +126,9 @@ int grub_print_default(const unsigned char *original, size_t size, FILE *out,
                        char *error, size_t error_size)
 {
     const char *names[] = {"saved_entry", "next_entry", "prev_saved_entry"};
-    unsigned char scratch[GRUB_ENV_SIZE];
-    struct grub_change change;
     size_t i;
     int next_nonempty = 0;
-    if (size != GRUB_ENV_SIZE)
-        return fail(error, error_size, "Expected a 1024-byte GRUB environment.");
-    /* Reuse the editor's strict validation; the proposed change stays in RAM. */
-    if (!grub_prepare(original, size, "0", scratch, &change, error, error_size)) return 0;
+    if (!grub_read_saved_entry(original, size, NULL, error, error_size)) return 0;
     for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         size_t pos = 0, name_size = strlen(names[i]);
         int found = 0;
