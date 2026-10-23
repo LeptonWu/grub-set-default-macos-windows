@@ -189,6 +189,8 @@ Run the build; it downloads and verifies e2fsprogs if needed:
 Output: `dist/grub-set-default.exe`, native x64 with GNU libraries linked in;
 only Windows system DLLs are imported. No administrator rights are needed.
 Network access and curl are needed only when the dependency is missing.
+Both build scripts show each stage and stream configure/compiler/make output
+to the terminal while saving logs. A failure identifies the stage and log path.
 
 ## Build natively on macOS
 
