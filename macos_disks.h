@@ -8,6 +8,10 @@ struct grub_macos_partitions {
     size_t physical_disks;
 };
 int grub_macos_linux_type(const char *content);
+/* Require Mounted (boolean) or MountPoint (string); validate both if present.
+ * Either reporting a mount means mounted. On failure,
+ * mounted remains true so unknown state can never permit a raw write. */
+int grub_macos_mount_state(CFDictionaryRef plist, int *mounted);
 /* Consume only direct Linux GPT partitions of physical whole disks from
  * diskutil list -plist physical. Caller frees the list even after failure. */
 int grub_macos_collect_partitions(CFDictionaryRef plist, struct grub_macos_partitions *list,

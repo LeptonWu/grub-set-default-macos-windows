@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-enum { STRING = 1, DICT, ARRAY };
+enum { STRING = 1, DICT, ARRAY, BOOLEAN };
 struct value;
 struct pair { const char *key; struct value *value; };
 struct value {
@@ -17,6 +17,19 @@ CFTypeID CFGetTypeID(CFTypeRef value) { return (CFTypeID)((const struct value *)
 CFTypeID CFDictionaryGetTypeID(void) { return DICT; }
 CFTypeID CFArrayGetTypeID(void) { return ARRAY; }
 CFTypeID CFStringGetTypeID(void) { return STRING; }
+CFTypeID CFBooleanGetTypeID(void) { return BOOLEAN; }
+unsigned char CFBooleanGetValue(CFBooleanRef boolean)
+{
+    const struct value *b = boolean;
+    assert(b->type == BOOLEAN);
+    return b->count != 0;
+}
+CFIndex CFStringGetLength(CFStringRef string)
+{
+    const struct value *s = string;
+    assert(s->type == STRING);
+    return (CFIndex)strlen(s->string);
+}
 CFTypeRef CFDictionaryGetValue(CFDictionaryRef dict, const void *key)
 {
     const struct value *d = dict;
@@ -45,8 +58,56 @@ int CFStringGetCString(CFStringRef string, char *buffer, CFIndex size, unsigned 
 #define STR(text) {STRING, text, NULL, NULL, 0}
 #define DICTIONARY(p) {DICT, NULL, p, NULL, sizeof(p) / sizeof((p)[0])}
 #define LIST(a) {ARRAY, NULL, NULL, a, sizeof(a) / sizeof((a)[0])}
+static void check_mount_state(void)
+{
+    struct value yes = {BOOLEAN, NULL, NULL, NULL, 1};
+    struct value no = {BOOLEAN, NULL, NULL, NULL, 0};
+    struct value empty = STR(""), path = STR("/Volumes/Linux"), text = STR("false");
+    struct pair pairs[] = {{"Mounted", &no}, {"MountPoint", &empty}};
+    struct value info = DICTIONARY(pairs);
+    int mounted;
+    /* Explicit false permits access unless MountPoint reports a mount. */
+    assert(grub_macos_mount_state(&info, &mounted) && !mounted);
+    info.count = 1;
+    assert(grub_macos_mount_state(&info, &mounted) && !mounted);
+    pairs[0].value = &yes;
+    assert(grub_macos_mount_state(&info, &mounted) && mounted);
+    info.count = 2;
+    assert(grub_macos_mount_state(&info, &mounted) && mounted);
+    pairs[1].value = &path;
+    assert(grub_macos_mount_state(&info, &mounted) && mounted);
+    /* A nonempty MountPoint wins over a contradictory Mounted=false. */
+    pairs[0].value = &no;
+    assert(grub_macos_mount_state(&info, &mounted) && mounted);
+    /* Real Linux-partition diskutil output can omit Mounted altogether. */
+    pairs[0].key = "Other";
+    assert(grub_macos_mount_state(&info, &mounted) && mounted);
+    pairs[1].value = &empty;
+    assert(grub_macos_mount_state(&info, &mounted) && !mounted);
+    /* Missing Mounted with mistyped MountPoint remains unknown. */
+    pairs[1].value = &yes;
+    mounted = 0;
+    assert(!grub_macos_mount_state(&info, &mounted) && mounted);
+    /* Both absent must not be interpreted as unmounted. */
+    info.count = 0;
+    mounted = 0;
+    assert(!grub_macos_mount_state(&info, &mounted) && mounted);
+    info.count = 2; pairs[0].key = "Mounted"; pairs[0].value = &text;
+    pairs[1].value = &empty;
+    mounted = 0;
+    assert(!grub_macos_mount_state(&info, &mounted) && mounted);
+    pairs[0].value = &no; pairs[1].value = &yes;
+    mounted = 0;
+    assert(!grub_macos_mount_state(&info, &mounted) && mounted);
+    mounted = 0;
+    assert(!grub_macos_mount_state(NULL, &mounted) && mounted);
+    mounted = 0;
+    assert(!grub_macos_mount_state(&path, &mounted) && mounted);
+    puts("Passed macOS mount-state checks: explicit booleans, optional/empty mount points, mounted and conflicting reports, missing/mistyped properties and invalid dictionaries.");
+}
 int main(void)
 {
+    check_mount_state();
     struct value disk0_id = STR("disk0"), disk1_id = STR("disk1");
     struct value scheme = STR("GUID_partition_scheme"), mbr = STR("FDisk_partition_scheme");
     struct value linux_type = STR("Linux Filesystem"), apfs_type = STR("Apple_APFS");

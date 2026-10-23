@@ -14,6 +14,20 @@ int grub_macos_linux_type(const char *content)
         if (!strcasecmp(content, types[i])) return 1;
     return 0;
 }
+int grub_macos_mount_state(CFDictionaryRef plist, int *mounted)
+{
+    CFTypeRef state, point;
+    *mounted = 1;
+    if (!plist || CFGetTypeID(plist) != CFDictionaryGetTypeID()) return 0;
+    state = CFDictionaryGetValue(plist, CFSTR("Mounted"));
+    if (state && CFGetTypeID(state) != CFBooleanGetTypeID()) return 0;
+    point = CFDictionaryGetValue(plist, CFSTR("MountPoint"));
+    if (point && CFGetTypeID(point) != CFStringGetTypeID()) return 0;
+    /* Linux partitions can omit Mounted but explicitly report MountPoint="". */
+    if (!state && !point) return 0;
+    *mounted = (state && CFBooleanGetValue(state)) || (point && CFStringGetLength(point) != 0);
+    return 1;
+}
 static int string_property(CFDictionaryRef dict, CFStringRef key, char *out, size_t size)
 {
     CFTypeRef value = CFDictionaryGetValue(dict, key);

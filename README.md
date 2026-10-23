@@ -130,6 +130,11 @@ external), excluding synthesized APFS devices and disk images. Only those
 Linux candidates receive individual `diskutil info -plist` calls to verify
 their types, UUIDs and mount state. Progress shows the physical-disk count and
 the Linux-partition count. A malformed list or failed enumeration stops the scan.
+Mount-state checks require `diskutil` to report a boolean `Mounted` property
+or a string `MountPoint`. Linux partitions may omit `Mounted` and report an
+empty `MountPoint` instead, which is accepted as unmounted. If both properties
+are absent, or either has the wrong type, access stops. A true `Mounted` or
+nonempty `MountPoint` excludes the partition. These checks run again before writing.
 
 `--device /dev/rdisk0s3` (or `/dev/disk0s3`) checks only that explicit partition,
 without enumerating physical disks. This also permits explicitly selecting a

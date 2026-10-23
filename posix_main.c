@@ -135,9 +135,9 @@ static CFDictionaryRef diskutil_dictionary(const char *command)
 }
 static int disk_info(const char *path, char uuid[128], int *linux_type, int *mounted)
 {
-    char command[256], block_path[PATH_MAX], buffer[4096], content[128] = "";
+    char command[256], block_path[PATH_MAX], content[128] = "";
     CFDictionaryRef plist;
-    CFTypeRef value;
+    *mounted = 1;
     if (!valid_device(path)) return 0;
     if (!strncmp(path, "/dev/rdisk", 10)) {
         snprintf(block_path, sizeof(block_path), "/dev/%s", path + 6);
@@ -150,10 +150,11 @@ static int disk_info(const char *path, char uuid[128], int *linux_type, int *mou
     *linux_type = grub_macos_linux_type(content);
     uuid[0] = 0;
     string_property(plist, CFSTR("DiskUUID"), uuid, 128);
-    *mounted = 0;
-    value = CFDictionaryGetValue((CFDictionaryRef)plist, CFSTR("Mounted"));
-    if (value && CFGetTypeID(value) == CFBooleanGetTypeID()) *mounted = CFBooleanGetValue(value);
-    if (string_property((CFDictionaryRef)plist, CFSTR("MountPoint"), buffer, sizeof(buffer)) && *buffer) *mounted = 1;
+    if (!grub_macos_mount_state(plist, mounted)) {
+        fprintf(stderr, "%s: missing or malformed mount state; raw access refused.\n", path);
+        CFRelease(plist);
+        return 0;
+    }
     CFRelease(plist);
     return 1;
 }
