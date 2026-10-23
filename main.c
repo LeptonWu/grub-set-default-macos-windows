@@ -23,7 +23,7 @@
 
 struct options {
     unsigned int disk, partition;
-    int have_disk, have_partition, have_guid, dry_run, scan_only, list_entries, show_default;
+    int have_disk, have_partition, have_guid, dry_run, scan_only, list_entries, show_default, next_boot;
     GUID guid;
     const char *image;
     const char *entry;
@@ -37,6 +37,7 @@ static void usage(void)
          "       grub-set-default.exe --show-default [OPTIONS]\n"
          "Set the persistent GRUB default by number, title, or menu ID.\n"
          "  --dry-run                 Preview and confirm without writing\n"
+         "  --next-boot               Set next_entry for the next boot; preserve saved_entry\n"
          "  --show-default            Show stored GRUB defaults (read-only)\n"
          "  --list-entries            List static grub.cfg menu definitions (read-only)\n"
          "  --scan                    List matching Linux GPT partitions\n"
@@ -48,7 +49,8 @@ static void usage(void)
          "  -h, --help                Show this help\n"
          "  -V, --version             Show version\n"
          "Requires GRUB_DEFAULT=saved in the existing GRUB configuration.\n"
-         "Clears next_entry and prev_saved_entry, preserving other variables.\n"
+         "Persistent mode clears next_entry and prev_saved_entry, preserving other variables.\n"
+         "Next-boot mode clears prev_saved_entry; GRUB must consume and clear next_entry.\n"
          "Setting a default requires confirmation, including for a dry run. No reboot performed.\n"
          "Raw partition access requires an Administrator terminal.");
 }
@@ -104,6 +106,7 @@ static int parse_options(int argc, char **argv, struct options *options)
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (!strcmp(arg, "--dry-run")) options->dry_run = 1;
+        else if (!strcmp(arg, "--next-boot")) { if (options->next_boot) return 0; options->next_boot = 1; }
         else if (!strcmp(arg, "--scan")) options->scan_only = 1;
         else if (!strcmp(arg, "--list-entries")) options->list_entries = 1;
         else if (!strcmp(arg, "--show-default")) options->show_default = 1;
@@ -143,6 +146,7 @@ static int parse_options(int argc, char **argv, struct options *options)
     if ((options->scan_only || options->list_entries || options->show_default) && options->entry) return 0;
     if (options->list_entries && (options->scan_only || options->dry_run || options->show_default)) return 0;
     if (options->show_default && (options->scan_only || options->dry_run)) return 0;
+    if (options->next_boot && (options->scan_only || options->list_entries || options->show_default)) return 0;
     if (options->image)
         return !options->have_disk && !options->have_partition && !options->have_guid && !options->scan_only;
     return !options->have_partition || (options->have_disk && options->have_guid);
@@ -257,7 +261,7 @@ static int backup_file(const char *directory, const char *name, const void *data
 
 static int make_backup(const char *device, const struct grub_location *location,
                        const unsigned char *replacement, const struct grub_change *change,
-                       char directory[MAX_PATH])
+                       int next_boot, char directory[MAX_PATH])
 {
     char temp[MAX_PATH], metadata[4096];
     DWORD length = GetTempPathA(sizeof(temp), temp);
@@ -271,9 +275,9 @@ static int make_backup(const char *device, const struct grub_location *location,
     printf("Backup directory: %s\n", directory);
     count = snprintf(metadata, sizeof(metadata),
              "device=%s\nblock_size=%" PRIu32 "\nblock_number=%" PRIu64
-             "\npartition_relative_offset=%" PRIu64 "\nfrom=%s\nto=%s\n",
+             "\npartition_relative_offset=%" PRIu64 "\nvariable=%s\nfrom=%s\nto=%s\n",
              device, location->block_size, location->block_number,
-             location->byte_offset, change->current, change->target);
+             location->byte_offset, next_boot ? "next_entry" : "saved_entry", change->current, change->target);
     if (count < 0 || count >= (int)sizeof(metadata)) return 0;
     return backup_file(directory, "original-block.bin", location->block, location->block_size) &&
            backup_file(directory, "replacement-block.bin", replacement, location->block_size) &&
@@ -298,11 +302,11 @@ static int delete_backup(const char *directory)
     return 1;
 }
 
-static int confirm(int dry_run, const struct grub_change *change)
+static int confirm(int dry_run, int next_boot, const struct grub_change *change)
 {
     char answer[128];
-    printf("%sChange saved_entry from '%s' to '%s'? [y/N] ",
-            dry_run ? "Dry run: " : "", change->current, change->target);
+    printf("%sChange %s from '%s' to '%s'? [y/N] ",
+            dry_run ? "Dry run: " : "", next_boot ? "next_entry" : "saved_entry", change->current, change->target);
     fflush(stdout);
     if (!fgets(answer, sizeof(answer), stdin)) return 0;
     answer[strcspn(answer, "\r\n")] = 0;
@@ -385,18 +389,20 @@ int main(int argc, char **argv)
     replacement = _aligned_malloc(location.block_size, 65536);
     check = _aligned_malloc(location.block_size, 65536);
     if (!replacement || !check) { fputs("Out of memory.\n", stderr); goto out; }
-    if (!grub_prepare(location.block, location.block_size, options.entry, replacement, &change, error, sizeof(error))) {
+    if (!(options.next_boot ? grub_prepare_next : grub_prepare)(location.block, location.block_size, options.entry, replacement, &change, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error); goto out;
     }
     printf("Block size: %" PRIu32 "\nPhysical block: %" PRIu64
            "\nPartition-relative byte offset: %" PRIu64 "\n",
            location.block_size, location.block_number, location.byte_offset);
-    printf("Proposed saved_entry: %s\n", change.target);
-    if (change.cleared_next_entry || change.cleared_prev_saved_entry)
+    printf("Proposed %s: %s\n", options.next_boot ? "next_entry" : "saved_entry", change.target);
+    if (options.next_boot)
+        puts("saved_entry is preserved. prev_saved_entry will be removed if present.");
+    else if (change.cleared_next_entry || change.cleared_prev_saved_entry)
         puts("Will remove next_entry and prev_saved_entry if present, like GNU grub-set-default.");
     grub_progress("Saving backup files...");
-    if (!make_backup(device, &location, replacement, &change, backup)) goto out;
-    if (!confirm(options.dry_run, &change)) {
+    if (!make_backup(device, &location, replacement, &change, options.next_boot, backup)) goto out;
+    if (!confirm(options.dry_run, options.next_boot, &change)) {
         puts("Cancelled. No disk writes performed."); status = 0; goto out;
     }
     if (options.dry_run) {
@@ -456,7 +462,7 @@ int main(int argc, char **argv)
     if (memcmp(check, replacement, location.block_size)) {
         fputs("Read-back verification FAILED. Inspect the disk before rebooting.\n", stderr); goto out;
     }
-    printf("Verified: saved_entry=%s; other variables and bytes beyond grubenv are preserved.\n", change.target);
+    printf("Verified: %s=%s; other variables and bytes beyond grubenv are preserved.\n", options.next_boot ? "next_entry" : "saved_entry", change.target);
     puts("No reboot performed.");
     status = 0;
 out:

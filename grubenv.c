@@ -56,14 +56,16 @@ int grub_read_saved_entry(const unsigned char *original, size_t size,
     return 1;
 }
 
-int grub_prepare(const unsigned char *original, size_t block_size,
+static int prepare(const unsigned char *original, size_t block_size,
                  const char *entry, unsigned char *replacement,
-                 struct grub_change *change, char *error, size_t error_size)
+                 struct grub_change *change, char *error, size_t error_size, int next_boot)
 {
     static const char header[] = "# GRUB Environment Block\n";
+    const char *target_name = next_boot ? "next_entry" : "saved_entry";
+    size_t target_size = strlen(target_name);
     unsigned char env[GRUB_ENV_SIZE];
     size_t pos = 0, used = 0, entry_size;
-    int have_saved = 0;
+    int have_target = 0;
     struct grub_change result;
     if (!original || !replacement || !change || !entry || block_size < GRUB_ENV_SIZE)
         return fail(error, error_size, "Invalid environment buffer or menu entry.");
@@ -71,7 +73,8 @@ int grub_prepare(const unsigned char *original, size_t block_size,
     if (!entry_size || entry_size >= GRUB_ENV_SIZE || strpbrk(entry, "\r\n"))
         return fail(error, error_size, "Menu entry must be nonempty and contain no newline.");
     memset(&result, 0, sizeof(result));
-    if (!grub_read_saved_entry(original, GRUB_ENV_SIZE, result.current, error, error_size)) return 0;
+    if (!grub_read_saved_entry(original, GRUB_ENV_SIZE, NULL, error, error_size)) return 0;
+    strcpy(result.current, "(unset)");
     strcpy(result.target, entry);
     memset(env, '#', sizeof(env));
     if (!memcmp(original, header, sizeof(header) - 1)) {
@@ -86,7 +89,7 @@ int grub_prepare(const unsigned char *original, size_t block_size,
         equal = start;
         while (original[equal] != '=') equal++;
         name_size = equal - start;
-        if (name_size == 10 && !memcmp(original + start, "next_entry", 10)) {
+        if (!next_boot && name_size == 10 && !memcmp(original + start, "next_entry", 10)) {
             result.cleared_next_entry = 1;
             continue;
         }
@@ -94,11 +97,15 @@ int grub_prepare(const unsigned char *original, size_t block_size,
             result.cleared_prev_saved_entry = 1;
             continue;
         }
-        if (name_size == 11 && !memcmp(original + start, "saved_entry", 11)) {
-            have_saved = 1;
-            if (used + 12 + entry_size + 1 > GRUB_ENV_SIZE)
+        if (name_size == target_size && !memcmp(original + start, target_name, target_size)) {
+            size_t value_size = pos - equal - 2;
+            memcpy(result.current, original + equal + 1, value_size);
+            result.current[value_size] = 0;
+            have_target = 1;
+            if (used + target_size + entry_size + 2 > GRUB_ENV_SIZE)
                 return fail(error, error_size, "New menu entry does not fit in grubenv.");
-            memcpy(env + used, "saved_entry=", 12); used += 12;
+            memcpy(env + used, target_name, target_size); used += target_size;
+            env[used++] = '=';
             memcpy(env + used, entry, entry_size); used += entry_size;
             env[used++] = '\n';
         } else {
@@ -108,10 +115,11 @@ int grub_prepare(const unsigned char *original, size_t block_size,
             memcpy(env + used, original + start, size); used += size;
         }
     }
-    if (!have_saved) {
-        if (used + 12 + entry_size + 1 > GRUB_ENV_SIZE)
+    if (!have_target) {
+        if (used + target_size + entry_size + 2 > GRUB_ENV_SIZE)
             return fail(error, error_size, "New menu entry does not fit in grubenv.");
-        memcpy(env + used, "saved_entry=", 12); used += 12;
+        memcpy(env + used, target_name, target_size); used += target_size;
+        env[used++] = '=';
         memcpy(env + used, entry, entry_size); used += entry_size;
         env[used++] = '\n';
     }
@@ -120,6 +128,20 @@ int grub_prepare(const unsigned char *original, size_t block_size,
     memcpy(replacement, env, GRUB_ENV_SIZE);
     *change = result;
     return 1;
+}
+
+int grub_prepare(const unsigned char *original, size_t block_size,
+                 const char *entry, unsigned char *replacement,
+                 struct grub_change *change, char *error, size_t error_size)
+{
+    return prepare(original, block_size, entry, replacement, change, error, error_size, 0);
+}
+
+int grub_prepare_next(const unsigned char *original, size_t block_size,
+                      const char *entry, unsigned char *replacement,
+                      struct grub_change *change, char *error, size_t error_size)
+{
+    return prepare(original, block_size, entry, replacement, change, error, error_size, 1);
 }
 
 int grub_print_default(const unsigned char *original, size_t size, FILE *out,

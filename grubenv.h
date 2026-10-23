@@ -15,6 +15,11 @@ struct grub_change {
 int grub_prepare(const unsigned char *original, size_t block_size,
                  const char *entry, unsigned char *replacement,
                  struct grub_change *change, char *error, size_t error_size);
+/* Set next_entry, preserve saved_entry, and remove the legacy prev_saved_entry
+ * override so it cannot replace the persistent default at boot. */
+int grub_prepare_next(const unsigned char *original, size_t block_size,
+                      const char *entry, unsigned char *replacement,
+                      struct grub_change *change, char *error, size_t error_size);
 /* Validate existing contents without requiring room for an edit. If non-NULL,
  * current receives saved_entry or "(unset)" and must hold GRUB_ENV_SIZE bytes. */
 int grub_read_saved_entry(const unsigned char *original, size_t size,

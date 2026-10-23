@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static void check(const char *prefix, const char *entry, const char *expected, int valid)
+static void check_mode(const char *prefix, const char *entry, const char *expected, int valid, int next_boot)
 {
     unsigned char original[4096], replacement[4096], wanted[GRUB_ENV_SIZE];
     struct grub_change change;
@@ -12,7 +12,7 @@ static void check(const char *prefix, const char *entry, const char *expected, i
     memcpy(original, prefix, strlen(prefix));
     for (i = GRUB_ENV_SIZE; i < sizeof(original); i++) original[i] = (unsigned char)i;
     memset(replacement, 0xaa, sizeof(replacement));
-    assert(grub_prepare(original, sizeof(original), entry, replacement, &change, error, sizeof(error)) == valid);
+    assert((next_boot ? grub_prepare_next : grub_prepare)(original, sizeof(original), entry, replacement, &change, error, sizeof(error)) == valid);
     if (!valid) {
         for (i = 0; i < sizeof(replacement); i++) assert(replacement[i] == 0xaa);
         return;
@@ -22,6 +22,40 @@ static void check(const char *prefix, const char *entry, const char *expected, i
     assert(!memcmp(replacement + GRUB_ENV_SIZE, original + GRUB_ENV_SIZE, sizeof(original) - GRUB_ENV_SIZE));
     assert(!strcmp(change.target, entry));
     assert(change.changed == (memcmp(original, wanted, GRUB_ENV_SIZE) != 0));
+}
+static void check(const char *prefix, const char *entry, const char *expected, int valid)
+{
+    check_mode(prefix, entry, expected, valid, 0);
+}
+static void check_next(void)
+{
+    check_mode("# GRUB Environment Block\nsaved_entry=0\nnext_entry=2\nprev_saved_entry=4\nrecordfail=1\n", "opencore",
+               "# GRUB Environment Block\nsaved_entry=0\nnext_entry=opencore\nrecordfail=1\n", 1, 1);
+    check_mode("saved_entry=2\n", "0", "saved_entry=2\nnext_entry=0\n", 1, 1);
+    check_mode("next_entry=4\nsaved_entry=2\n", "1>2", "next_entry=1>2\nsaved_entry=2\n", 1, 1);
+    check_mode("# GRUB Environment Block\n", "Advanced options>Recovery", "# GRUB Environment Block\nnext_entry=Advanced options>Recovery\n", 1, 1);
+    check_mode("saved_entry=\nnext_entry=\nprev_saved_entry=\n", "12", "saved_entry=\nnext_entry=12\n", 1, 1);
+    check_mode("saved_entry=2\nnext_entry=4\n", "4", "saved_entry=2\nnext_entry=4\n", 1, 1);
+    check_mode("custom=a=b#c\nnext_entry=old\n", "id", "custom=a=b#c\nnext_entry=id\n", 1, 1);
+    check_mode("saved_entry=0\n", "", NULL, 0, 1);
+    check_mode("saved_entry=0\n", "2\nnext_entry=0", NULL, 0, 1);
+    check_mode("next_entry=2\nnext_entry=4\n", "0", NULL, 0, 1);
+    check_mode("saved_entry=4\n#bad padding", "0", NULL, 0, 1);
+    {
+        unsigned char original[1024], replacement[1024];
+        char error[256];
+        struct grub_change change;
+        const char *prefix = "saved_entry=0\nnext_entry=4\nprev_saved_entry=2\n";
+        memset(original, '#', sizeof(original)); memcpy(original, prefix, strlen(prefix));
+        assert(grub_prepare_next(original, sizeof(original), "4", replacement, &change, error, sizeof(error)));
+        assert(!strcmp(change.current, "4") && change.changed);
+        assert(!change.cleared_next_entry && change.cleared_prev_saved_entry);
+    }
+    {
+        char huge[1024]; memset(huge, 'a', sizeof(huge) - 1); huge[1023] = 0;
+        check_mode("# GRUB Environment Block\nsaved_entry=0\n", huge, NULL, 0, 1);
+    }
+    puts("Passed next-boot editor cases: preserved/unset/empty saved_entry, legacy override removal, IDs/titles/submenus, current override, no-op, preserved tail and invalid/oversized input.");
 }
 static void check_default(const char *prefix, const char *expected, int valid)
 {
@@ -41,6 +75,7 @@ static void check_default(const char *prefix, const char *expected, int valid)
 }
 int main(void)
 {
+    check_next();
     check("# GRUB Environment Block\nsaved_entry=0\nnext_entry=2\nprev_saved_entry=4\nrecordfail=1\n", "2",
           "# GRUB Environment Block\nsaved_entry=2\nrecordfail=1\n", 1);
     check("saved_entry=2\n", "0", "saved_entry=0\n", 1);
@@ -92,6 +127,7 @@ int main(void)
                                              current, error, sizeof(error)));
                 assert(!strcmp(current, i == 1 ? "" : "(unset)"));
                 check(full, "test-entry", NULL, 0);
+                check_mode(full, "test-entry", NULL, 0, 1);
             }
         }
     }

@@ -90,6 +90,53 @@ with tempfile.TemporaryDirectory() as temporary:
     result = call("--image", str(image), "2", answer="", env=env)
     assert result.returncode == 0 and image.read_bytes() == pristine
     clean()
+    # Next-boot selection uses the same confirmation and cleanup rules.
+    for flags, answer in ((("--dry-run",), "y\n"), ((), "n\n"), ((), "")):
+        result = call("--image", str(image), "--next-boot", *flags, "opencore", answer=answer, env=env)
+        assert result.returncode == 0 and "[y/N]" in result.stdout, result
+        assert image.read_bytes() == pristine
+        clean()
+    for flags in (("--scan",), ("--list-entries",), ("--show-default",),
+                  ("--next-boot",), ("2",)):
+        result = call("--image", str(image), "--next-boot", *flags, "opencore", env=env)
+        assert result.returncode != 0 and image.read_bytes() == pristine, result
+        clean()
+    for args in (("--next-boot",), ("--next-boot", ""), ("--next-boot", "bad\nentry")):
+        result = call("--image", str(image), *args, env=env)
+        assert result.returncode != 0 and image.read_bytes() == pristine, result
+        clean()
+    for entry in ("2", "Advanced options>Recovery", "opencore"):
+        result = call("--image", str(image), "--next-boot", entry, env=env)
+        assert result.returncode == 0 and "next_entry" in result.stdout, result
+        actual = image.read_bytes()
+        expected = ("# GRUB Environment Block\nsaved_entry=0\nnext_entry=" + entry +
+                    "\nrecordfail=1\ncustom=a=b#c\n").encode()
+        assert actual[offset:offset + 1024] == expected + b"#" * (1024 - len(expected))
+        assert actual[:offset] == pristine[:offset] and actual[offset + 1024:] == pristine[offset + 1024:]
+        clean()
+        # Compare actual GNU grub-reboot on a disposable boot directory. Remove
+        # legacy prev_saved_entry first: GNU restores it, whereas our mode
+        # intentionally preserves the existing saved_entry and drops the override.
+        reference_editor = Path("/usr/bin/grub-editenv")
+        reference_reboot = Path("/usr/sbin/grub-reboot")
+        if reference_editor.exists() and reference_reboot.exists():
+            reference_boot = base / "reference-boot"
+            reference_env = reference_boot / "grub/grubenv"
+            reference_env.parent.mkdir(parents=True, exist_ok=True)
+            reference_env.write_bytes(original_env)
+            subprocess.run([str(reference_editor), str(reference_env), "unset", "prev_saved_entry"], check=True)
+            subprocess.run([str(reference_reboot), "--boot-directory", str(reference_boot), entry],
+                           check=True, capture_output=True, text=True)
+            assert reference_env.read_bytes() == actual[offset:offset + 1024]
+    result = call("--image", str(image), "--next-boot", "opencore", env=env)
+    assert result.returncode == 0 and "Already set" in result.stdout, result
+    assert image.read_bytes() == actual
+    clean()
+    result = call("--image", str(image), "--show-default", answer="", env=env)
+    assert result.returncode == 0 and "saved_entry=0\nnext_entry=opencore\nprev_saved_entry=(unset)" in result.stdout
+    assert image.read_bytes() == actual
+    clean()
+    image.write_bytes(pristine)
     for entry in ("2", "0", "4", "12", "Advanced options>GNU/Linux", "gnulinux-id", "gnulinux-id"):
         result = call("--image", str(image), entry, env=env)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -165,7 +212,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert result.returncode != 0 and "listing may be incomplete" in result.stderr, result
     assert image.read_bytes() == before
     clean()
-print("Passed CLI image tests: dry-run confirmation, cancellation/EOF, explicit entries, "
+print("Passed CLI image tests: next-boot selection and GNU grub-reboot compatibility, dry-run confirmation, cancellation/EOF, explicit entries, "
       "idempotence, GNU compatibility, preserved bytes, cleanup, read-only menu listing "
       "without grubenv, read-only stored defaults without grub.cfg, separate-boot paths, "
       "and malformed config/argument rejection.")

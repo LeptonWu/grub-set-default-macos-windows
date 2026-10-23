@@ -51,6 +51,38 @@ selected ext4 partition**, default `/boot`, rather than a mounted host directory
 Use `--boot-directory /` for a separate /boot partition with `/grub/grubenv`.
 GNU's deprecated `--root-directory` option is not implemented.
 
+## Choose the next boot without changing the permanent default
+
+```sh
+# macOS: use a menu number, title, ID, or submenu path from your configuration
+sudo ./dist/grub-set-default --next-boot --dry-run opencore
+sudo ./dist/grub-set-default --next-boot opencore
+```
+
+```powershell
+# Windows: Administrator PowerShell
+.\grub-set-default.exe --next-boot --dry-run 2
+.\grub-set-default.exe --next-boot 2
+```
+
+`--next-boot` sets `next_entry` and preserves the existing `saved_entry`,
+including an empty or absent value. It removes `prev_saved_entry` so this legacy
+override cannot replace the permanent default at boot. Other variables and bytes
+beyond grubenv are preserved. The same partition-selection options, confirmation,
+backups, dry-run behavior, flush and read-back checks apply. It does not reboot.
+Do not combine it with `--scan`, `--list-entries`, or `--show-default`.
+
+The installed `grub.cfg` must honor `next_entry` and clear it using `save_env`,
+and GRUB must be able to write the environment block at boot. Otherwise the
+override may be ignored or persist across subsequent boots. The program cannot
+verify these boot-time conditions. See the [GNU GRUB next_entry documentation](https://www.gnu.org/software/grub/manual/grub/html_node/next_005fentry.html).
+
+For environments without a legacy `prev_saved_entry`, this performs the same
+variable update as GNU `grub-reboot`. GNU's tool restores a nonempty legacy
+`prev_saved_entry` into `saved_entry`; this option instead preserves the current
+`saved_entry` and removes the legacy override. A later persistent-default command
+(without `--next-boot`) clears `next_entry` as usual.
+
 ## Show the current stored default
 
 ```sh
