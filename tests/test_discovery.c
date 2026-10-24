@@ -137,18 +137,29 @@ static struct struct_io_manager probe_manager = {
     .open = probe_open, .read_blk = probe_read, .close = probe_close,
 };
 static int config_calls;
+static unsigned int layout_mask = 1;
+static int has_layout(const char *path)
+{
+    const char *paths[] = {"/boot/grub/grubenv", "/boot/grub2/grubenv", "/grub/grubenv", "/grub2/grubenv"};
+    size_t i;
+    for (i = 0; i < 4; i++) if (!strcmp(paths[i], path)) return (layout_mask & (1U << i)) != 0;
+    return 0;
+}
 int grub_load_config(const char *device, const char *path, unsigned char **data,
                      size_t *size, char *error, size_t error_size)
 {
-    (void)device; (void)path; (void)error; (void)error_size;
-    config_calls++; *size = 1; *data = malloc(1); return *data != NULL;
+    (void)device;
+    config_calls++;
+    if (!has_layout(path)) { snprintf(error, error_size, "Missing test config."); return 0; }
+    *size = 1; *data = malloc(1); return *data != NULL;
 }
 int grub_locate_at(const char *device, const char *path, struct grub_location *location, char *error, size_t size)
 {
     const char *text = invalid_environment ? "malformed\n" : "saved_entry=2\n";
-    (void)device; (void)path; (void)error; (void)size;
+    (void)device;
     locate_calls++;
     memset(location, 0, sizeof(*location));
+    if (!has_layout(path)) { snprintf(error, size, "Missing test environment."); return 0; }
     location->block_size = 4096;
     location->block = malloc(4096);
     memset(location->block, '#', 4096);
@@ -167,6 +178,7 @@ int main(void)
     struct grub_scan_filter filter = {0};
     struct grub_candidate *items = NULL;
     size_t count;
+    filter.path = "/boot/grub/grubenv";
     assert(grub_discover(&filter, &items, &count));
     assert(count == 2 && locate_calls == 2 && resizes == 2);
     assert(items[0].disk == 0 && items[1].disk == 1);
@@ -198,7 +210,20 @@ int main(void)
     assert(grub_discover(&filter, &items, &count)); assert(count == 0); free(items);
     ext4_features = 1; filter.config_only = 1; locate_calls = 0;
     assert(grub_discover(&filter, &items, &count));
-    assert(count == 2 && config_calls == 2 && locate_calls == 0); free(items);
+    assert(count == 2 && config_calls == 8 && locate_calls == 0); free(items);
+    /* Both grub2 layouts on each partition remain distinct, including when a
+     * duplicate disk interface is enumerated. Path restrictions still apply. */
+    filter.config_only = 0; layout_mask = (1U << 1) | (1U << 3); duplicate = 1;
+    assert(grub_discover(&filter, &items, &count));
+    assert(count == 4);
+    assert(!strcmp(items[0].env_path, "/boot/grub2/grubenv"));
+    assert(!strcmp(items[1].env_path, "/grub2/grubenv"));
+    assert(items[0].disk == items[1].disk && items[2].disk != items[0].disk);
+    free(items);
+    filter.path = "/boot/grub/grubenv";
+    assert(grub_discover(&filter, &items, &count)); assert(count == 0); free(items);
+    filter.path = "/grub2/grubenv";
+    assert(grub_discover(&filter, &items, &count)); assert(count == 2); free(items);
     puts("Passed discovery mocks: GPT/type/signature/grubenv filters, disk/GUID filters, multiple/no matches, duplicate interfaces, layout resizing, malformed tables and incomplete scans.");
     return 0;
 }

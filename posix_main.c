@@ -21,6 +21,7 @@
 #include "ext4_reader.h"
 #include "grubenv.h"
 #include "config_reader.h"
+#include "path_probe.h"
 #include "posix_flush.h"
 #include "progress.h"
 #ifndef PATH_MAX
@@ -31,7 +32,7 @@ struct options {
     char env_path[1024];
     int scan, dry, list, show_default, next_boot, yes;
 };
-struct candidate { char device[PATH_MAX], uuid[128], current[GRUB_ENV_SIZE]; };
+struct candidate { char device[PATH_MAX], uuid[128], env_path[GRUB_PATH_SIZE], current[GRUB_ENV_SIZE]; };
 static void usage(void)
 {
     puts("Usage: grub-set-default [OPTIONS] MENU_ENTRY\n"
@@ -40,11 +41,11 @@ static void usage(void)
          "Set saved_entry by number, title, or menu ID; requires GRUB_DEFAULT=saved.\n"
          "  --show-default         Show stored GRUB defaults (read-only)\n"
          "  --list-entries         List static grub.cfg menu definitions (read-only)\n"
-         "  --scan                 List matching Linux GPT partitions (no entry needed)\n"
+         "  --scan                 List matching Linux GPT partition/path pairs\n"
          "  --device /dev/rdiskNsP  Select a macOS partition explicitly\n"
          "  --partition-guid UUID  Restrict discovery by GPT partition UUID\n"
          "  --image FILE           Use a partition-only ext4 image\n"
-         "  --boot-directory DIR   Locate DIR/grub/grubenv inside ext4 (default /boot)\n"
+         "  --boot-directory DIR   Restrict to DIR/grub/grubenv; default: probe common layouts\n"
          "  --dry-run              Preview and confirm without writing\n"
          "  --next-boot            Set next_entry for the next boot; preserve saved_entry\n"
          "  -y, --yes              Skip confirmation; fail if target selection is ambiguous\n"
@@ -58,7 +59,7 @@ static void usage(void)
 static int parse(int argc, char **argv, struct options *o)
 {
     int i;
-    memset(o, 0, sizeof(*o)); strcpy(o->env_path, "/boot/grub/grubenv");
+    memset(o, 0, sizeof(*o));
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 2; }
@@ -164,7 +165,7 @@ static int disk_info(const char *path, char uuid[128], int *linux_type, int *mou
     CFRelease(plist);
     return 1;
 }
-static int discover(const struct options *o, char path[PATH_MAX], char uuid[128])
+static int discover(struct options *o, char path[PATH_MAX], char uuid[128])
 {
     struct grub_macos_partitions disks = {0};
     struct candidate *items = NULL;
@@ -191,12 +192,12 @@ static int discover(const struct options *o, char path[PATH_MAX], char uuid[128]
         }
         grub_progress("Found %zu physical disk(s), %zu Linux partition(s) to inspect.", disks.physical_disks, disks.count);
     }
-    printf("Scanning Linux GPT partitions for %s...\n", o->list ? "grub.cfg" : o->env_path);
+    printf("Scanning Linux GPT partitions for %s...\n", o->list ? "grub.cfg layouts" : "grubenv layouts");
     for (i = 0; i < disks.count; i++) {
-        char id[128], error[512];
+        char id[128];
         int linux_type, mounted;
-        struct grub_location loc;
-        struct grub_change change;
+        struct grub_path_match matches[GRUB_COMMON_PATHS];
+        size_t found, j;
         struct candidate *grown;
         const char *device = disks.devices[i];
         if (!valid_device(device) || (o->device && strcmp(o->device, device))) continue;
@@ -213,51 +214,42 @@ static int discover(const struct options *o, char path[PATH_MAX], char uuid[128]
             grub_progress("Skipping %s: partition UUID does not match.", device); continue;
         }
         if (mounted) { fprintf(stderr, "%s: mounted; excluded.\n", device); continue; }
-        if (o->list) {
-            unsigned char *config; size_t config_size;
-            if (!grub_load_config(device, o->env_path, &config, &config_size, error, sizeof(error))) {
-                fprintf(stderr, "%s: skipped: %s\n", device, error); continue;
-            }
-            free(config); strcpy(change.current, "(not read)");
-        } else {
-            grub_progress("Inspecting %s on %s...", o->env_path, device);
-            if (!grub_locate_at(device, o->env_path, &loc, error, sizeof(error))) {
-                fprintf(stderr, "%s: skipped: %s\n", device, error); continue;
-            }
-            result = grub_read_saved_entry(loc.block, GRUB_ENV_SIZE, change.current, error, sizeof(error));
-            grub_location_free(&loc);
-            if (!result) { fprintf(stderr, "%s: skipped: %s\n", device, error); continue; }
-        }
-        grown = realloc(items, (count + 1) * sizeof(*items));
+        found = grub_probe_paths(device, o->env_path, o->list, matches);
+        if (!found) continue;
+        grown = realloc(items, (count + found) * sizeof(*items));
         if (!grown) { incomplete = 1; break; }
         items = grown;
-        snprintf(items[count].device, PATH_MAX, "%s", device);
-        snprintf(items[count].uuid, sizeof(items[count].uuid), "%s", id);
-        snprintf(items[count].current, sizeof(items[count].current), "%s", change.current);
-        if (o->list) printf("[%zu] %s, UUID %s, grub.cfg found\n", count + 1, device, id);
-        else printf("[%zu] %s, UUID %s, saved_entry=%s\n", count + 1, device, id, change.current);
-        count++;
+        for (j = 0; j < found; j++) {
+            snprintf(items[count].device, PATH_MAX, "%s", device);
+            snprintf(items[count].uuid, sizeof(items[count].uuid), "%s", id);
+            strcpy(items[count].env_path, matches[j].env_path);
+            strcpy(items[count].current, matches[j].current);
+            if (o->list) printf("[%zu] %s, UUID %s, %s (grub.cfg found)\n", count + 1, device, id, matches[j].env_path);
+            else printf("[%zu] %s, UUID %s, %s, saved_entry=%s\n", count + 1, device, id, matches[j].env_path, matches[j].current);
+            count++;
+        }
     }
     grub_macos_free_partitions(&disks);
-    grub_progress("Partition scan complete: %zu matching partition(s).", count);
+    grub_progress("Partition scan complete: %zu matching GRUB target(s).", count);
     if (incomplete) { free(items); fputs("Incomplete partition scan; no target selected.\n", stderr); return 0; }
     if (o->scan) { free(items); return 2; }
     if (!count) { free(items); fputs("No matching partition found.\n", stderr); return 0; }
     if (count > 1 && o->yes) {
         free(items);
-        fputs("Multiple matching partitions; --yes requires a unique target. Use --device or --partition-guid.\n", stderr);
+        fputs("Multiple matching GRUB targets; --yes requires a unique target. Restrict the partition or use --boot-directory.\n", stderr);
         return 0;
     }
     if (count > 1) {
         char *end;
         unsigned long choice;
-        printf("Choose a partition [1-%zu], or Enter to cancel: ", count); fflush(stdout);
+        printf("Choose a GRUB target [1-%zu], or Enter to cancel: ", count); fflush(stdout);
         if (!fgets(answer, sizeof(answer), stdin) || answer[0] == '\n') { free(items); return 2; }
         errno = 0; choice = strtoul(answer, &end, 10);
         if (errno || end == answer || (*end != '\n' && *end) || !choice || choice > count) { free(items); return 0; }
         selected = choice - 1;
     }
     strcpy(path, items[selected].device); strcpy(uuid, items[selected].uuid);
+    strcpy(o->env_path, items[selected].env_path);
     grub_progress("Selected %s (UUID %s).", path, uuid);
     free(items); return 1;
 }
@@ -302,7 +294,7 @@ int main(int argc, char **argv)
     struct grub_location loc = {0}, fresh = {0};
     struct grub_change change;
     struct stat initial, current;
-    char path[PATH_MAX], backup[PATH_MAX] = "", error[512], answer[32], metadata[PATH_MAX + 256];
+    char path[PATH_MAX], backup[PATH_MAX] = "", error[512], answer[32], metadata[PATH_MAX + GRUB_PATH_SIZE + 256];
     unsigned char *replacement = NULL, *check = NULL;
     int parsed = parse(argc, argv, &o), status = 1, fd = -1;
     uint64_t size;
@@ -347,6 +339,10 @@ int main(int argc, char **argv)
 #endif
     }
     close(fd); fd = -1;
+    if (!*o.env_path) {
+        parsed = grub_select_path(path, o.env_path, o.list, o.yes);
+        if (parsed != 1) { status = parsed == 2 ? 0 : 1; goto out; }
+    }
     if (o.list) {
         if (!grub_list_config(path, o.env_path, stdout, error, sizeof(error))) {
             fprintf(stderr, "%s\n", error); goto out;
@@ -381,7 +377,7 @@ int main(int argc, char **argv)
     }
     printf("Backup directory: %s\n", backup);
     grub_progress("Saving backup files...");
-    snprintf(metadata, sizeof(metadata), "device=%s\nblock_size=%u\npartition_relative_offset=%" PRIu64 "\nvariable=%s\n", path, loc.block_size, loc.byte_offset, o.next_boot ? "next_entry" : "saved_entry");
+    snprintf(metadata, sizeof(metadata), "device=%s\nenv_path=%s\nblock_size=%u\npartition_relative_offset=%" PRIu64 "\nvariable=%s\n", path, o.env_path, loc.block_size, loc.byte_offset, o.next_boot ? "next_entry" : "saved_entry");
     if (!save_file(backup, "original-block.bin", loc.block, loc.block_size) ||
         !save_file(backup, "replacement-block.bin", replacement, loc.block_size) ||
         !save_file(backup, "location.txt", metadata, strlen(metadata))) { perror("Save backups"); goto out; }

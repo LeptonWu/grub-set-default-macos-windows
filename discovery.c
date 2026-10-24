@@ -78,10 +78,10 @@ static int probe_ext4(const char *device)
 static int probe_candidate(unsigned int disk, const PARTITION_INFORMATION_EX *partition,
                            const char *path, int config_only, struct grub_candidate **items, size_t *count)
 {
-    struct grub_location location;
-    struct grub_candidate candidate, *grown;
-    char device[128], error[512];
-    size_t i;
+    struct grub_path_match matches[GRUB_COMMON_PATHS];
+    struct grub_candidate *grown;
+    char device[128];
+    size_t i, found;
     int signature;
     for (i = 0; i < *count; i++) {
         if ((*items)[i].disk == disk && (*items)[i].partition == partition->PartitionNumber)
@@ -100,37 +100,20 @@ static int probe_candidate(unsigned int disk, const PARTITION_INFORMATION_EX *pa
         grub_progress("Skipping disk %u partition %lu: no ext4 signature.", disk, (unsigned long)partition->PartitionNumber);
         return 1;
     }
-    memset(&candidate, 0, sizeof(candidate));
-    if (config_only) {
-        unsigned char *config; size_t config_size;
-        if (!grub_load_config(device, path ? path : "/boot/grub/grubenv", &config, &config_size, error, sizeof(error))) {
-            printf("Disk %u partition %lu: skipped: %s\n", disk, (unsigned long)partition->PartitionNumber, error);
-            return 1;
-        }
-        free(config); strcpy(candidate.change.current, "(not read)");
-    } else {
-        grub_progress("Inspecting %s on disk %u partition %lu...", path ? path : "/boot/grub/grubenv",
-                      disk, (unsigned long)partition->PartitionNumber);
-        if (!grub_locate_at(device, path ? path : "/boot/grub/grubenv", &location, error, sizeof(error))) {
-            printf("Disk %u partition %lu: ext4, skipped: %s\n",
-                   disk, (unsigned long)partition->PartitionNumber, error);
-            return 1;
-        }
-        if (!grub_read_saved_entry(location.block, GRUB_ENV_SIZE, candidate.change.current,
-                                  error, sizeof(error))) {
-            printf("Disk %u partition %lu: skipped: %s\n", disk,
-                   (unsigned long)partition->PartitionNumber, error);
-            grub_location_free(&location); return 1;
-        }
-        grub_location_free(&location);
-    }
-    candidate.disk = disk;
-    candidate.partition = partition->PartitionNumber;
-    candidate.guid = partition->Gpt.PartitionId;
-    grown = realloc(*items, (*count + 1) * sizeof(**items));
+    found = grub_probe_paths(device, path, config_only, matches);
+    if (!found) return 1;
+    grown = realloc(*items, (*count + found) * sizeof(**items));
     if (!grown) return 0;
     *items = grown;
-    (*items)[(*count)++] = candidate;
+    for (i = 0; i < found; i++) {
+        struct grub_candidate *candidate = &(*items)[(*count)++];
+        memset(candidate, 0, sizeof(*candidate));
+        candidate->disk = disk;
+        candidate->partition = partition->PartitionNumber;
+        candidate->guid = partition->Gpt.PartitionId;
+        strcpy(candidate->env_path, matches[i].env_path);
+        strcpy(candidate->change.current, matches[i].current);
+    }
     return 1;
 }
 
@@ -210,7 +193,7 @@ int grub_discover(const struct grub_scan_filter *filter,
         free(layout);
     }
     SetupDiDestroyDeviceInfoList(devices);
-    grub_progress("Partition scan complete: %zu matching partition(s).", *count);
+    grub_progress("Partition scan complete: %zu matching GRUB target(s).", *count);
     if (!ok) fputs("Discovery was incomplete; automatic selection has been stopped.\n", stderr);
     return ok;
 }

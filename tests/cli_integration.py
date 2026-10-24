@@ -9,7 +9,11 @@ import tempfile
 mk, debug, program = map(str, map(Path, sys.argv[1:]))
 
 
-def call(*args, answer="y\n", env=None):
+def call(*args, answer="y\n", env=None, auto_paths=False):
+    # Existing fixtures deliberately hold two layouts. Keep their original
+    # tests restricted, and opt into automatic path probing in layout tests.
+    if not auto_paths and not any(a == "--boot-directory" or a.startswith("--boot-directory=") for a in args):
+        args = (*args, "--boot-directory", "/boot")
     return subprocess.run([program, *args], input=answer, text=True,
                           capture_output=True, env=env)
 
@@ -46,6 +50,31 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def clean():
         assert not list(base.glob("grubenv-backup-*"))
+
+    # This image has /boot/grub and /grub: never silently prefer the first.
+    for args in (("--show-default",), ("--list-entries",), ("--dry-run", "2"), ("--next-boot", "2")):
+        result = call("--image", str(image), "--yes", *args, answer="", env=env, auto_paths=True)
+        assert result.returncode != 0 and "Multiple GRUB layouts" in result.stderr, result
+        assert "Choose a GRUB target" not in result.stdout and image.read_bytes() == pristine
+        clean()
+    for answer, status in (("", 0), ("\n", 0), ("0\n", 1), ("y\n", 1), ("3\n", 1)):
+        result = call("--image", str(image), "2", answer=answer, env=env, auto_paths=True)
+        assert result.returncode == status and image.read_bytes() == pristine, result
+        clean()
+    result = call("--image", str(image), "--show-default", answer="2\n", env=env, auto_paths=True)
+    assert result.returncode == 0 and "Environment: /grub/grubenv" in result.stdout, result
+    assert image.read_bytes() == pristine
+    clean()
+    mapped = subprocess.run([debug, "-R", "bmap /grub/grubenv 0", str(image)], capture_output=True, text=True, check=True)
+    separate_offset = int(mapped.stdout.strip()) * 4096
+    result = call("--image", str(image), "--next-boot", "opencore", answer="2\ny\n", env=env, auto_paths=True)
+    assert result.returncode == 0 and "Verified next_entry=opencore" in result.stdout, result
+    changed = image.read_bytes()
+    assert changed[:separate_offset] == pristine[:separate_offset]
+    assert changed[separate_offset + 1024:] == pristine[separate_offset + 1024:]
+    assert b"next_entry=opencore\n" in changed[separate_offset:separate_offset + 1024]
+    clean()
+    image.write_bytes(pristine)
 
     result = call("--image", str(image), "--show-default", answer="", env=env)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -254,6 +283,51 @@ with tempfile.TemporaryDirectory() as temporary:
     assert result.returncode != 0 and "listing may be incomplete" in result.stderr, result
     assert image.read_bytes() == before
     clean()
+# Check every common layout as the only installation in a filesystem. All path
+# selection is automatic here; no --boot-directory option is injected.
+with tempfile.TemporaryDirectory() as temporary:
+    base = Path(temporary)
+    env = dict(os.environ, TMPDIR=str(base))
+    for index, layout in enumerate(("boot/grub", "boot/grub2", "grub", "grub2")):
+        root = base / f"root-{index}"
+        directory = root / layout
+        directory.mkdir(parents=True)
+        saved = f"layout-{index}"
+        original = f"# GRUB Environment Block\nsaved_entry={saved}\ncustom=keep\n".encode()
+        (directory / "grubenv").write_bytes(original + b"#" * (1024 - len(original)))
+        (directory / "grub.cfg").write_text("menuentry 'Test' --id test { true; }\n")
+        image = base / f"layout-{index}.img"
+        with image.open("wb") as f:
+            f.truncate(64 * 1024 * 1024)
+        subprocess.run([mk, "-q", "-t", "ext4", "-F", "-b", "4096", "-d", str(root), str(image)], check=True)
+        before = image.read_bytes()
+        result = call("--image", str(image), "--yes", "--show-default", answer="", env=env, auto_paths=True)
+        assert result.returncode == 0 and f"Environment: /{layout}/grubenv" in result.stdout, result
+        assert f"saved_entry={saved}" in result.stdout and image.read_bytes() == before
+        result = call("--image", str(image), "--yes", "--list-entries", answer="", env=env, auto_paths=True)
+        assert result.returncode == 0 and f"Configuration: /{layout}/grub.cfg" in result.stdout, result
+        assert image.read_bytes() == before
+        result = call("--image", str(image), "--yes", "--dry-run", "test", answer="", env=env, auto_paths=True)
+        assert result.returncode == 0 and image.read_bytes() == before, result
+        mapped = subprocess.run([debug, "-R", f"bmap /{layout}/grubenv 0", str(image)], capture_output=True, text=True, check=True)
+        offset = int(mapped.stdout.strip()) * 4096
+        for flags, entry in ((("--next-boot",), "test"), ((), "linux")):
+            result = call("--image", str(image), "--yes", *flags, entry, answer="", env=env, auto_paths=True)
+            assert result.returncode == 0 and "Verified" in result.stdout, result
+            actual = image.read_bytes()
+            assert actual[:offset] == before[:offset] and actual[offset + 1024:] == before[offset + 1024:]
+            expected = (f"# GRUB Environment Block\nsaved_entry={saved}\ncustom=keep\nnext_entry=test\n" if flags
+                        else "# GRUB Environment Block\nsaved_entry=linux\ncustom=keep\n").encode()
+            assert actual[offset:offset + 1024] == expected + b"#" * (1024 - len(expected))
+            assert not list(base.glob("grubenv-backup-*"))
+        # Config-only discovery must still work after removing grubenv.
+        subprocess.run([debug, "-w", "-R", f"rm /{layout}/grubenv", str(image)], check=True, capture_output=True)
+        before = image.read_bytes()
+        result = call("--image", str(image), "--yes", "--list-entries", answer="", env=env, auto_paths=True)
+        assert result.returncode == 0 and image.read_bytes() == before, result
+        result = call("--image", str(image), "--yes", "--show-default", answer="", env=env, auto_paths=True)
+        assert result.returncode != 0 and image.read_bytes() == before, result
+print("Passed automatic layout tests: all four paths, read-only modes, persistent/next-boot writes, ambiguity, selection, cancellation and config-only discovery.")
 print("Passed CLI image tests: unattended --yes/-y writes, previews, no-op and validation, next-boot selection and GNU grub-reboot compatibility, dry-run confirmation, cancellation/EOF, explicit entries, "
       "idempotence, GNU compatibility, preserved bytes, cleanup, read-only menu listing "
       "without grubenv, read-only stored defaults without grub.cfg, separate-boot paths, "

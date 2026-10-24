@@ -25,13 +25,13 @@ else
 fi
 : > build.log
 run_build_step 'Building e2fsprogs libraries (4 parallel jobs)' "$build/build.log" make -j4 libs
-for unit in macos_disks menu_entries config_reader posix_main posix_reader posix_flush grubenv ext4_reader; do
+for unit in path_probe macos_disks menu_entries config_reader posix_main posix_reader posix_flush grubenv ext4_reader; do
   run_build_step "Compiling $unit.c" "$build/build.log" \
     cc -std=c11 -Wall -Wextra -Werror -O2 -I"$build/lib" -I"$source_dir/lib" \
     -c "$project/$unit.c" -o "$unit.o"
 done
 run_build_step 'Linking grub-set-default' "$build/build.log" \
-  cc -o "$project/dist/grub-set-default" macos_disks.o menu_entries.o config_reader.o posix_main.o posix_reader.o posix_flush.o grubenv.o ext4_reader.o \
+  cc -o "$project/dist/grub-set-default" path_probe.o macos_disks.o menu_entries.o config_reader.o posix_main.o posix_reader.o posix_flush.o grubenv.o ext4_reader.o \
   lib/libext2fs.a lib/libcom_err.a lib/libuuid.a -framework CoreFoundation
 printf 'Built: %s\n' "$project/dist/grub-set-default"
 printf 'Build logs: %s\n' "$build"

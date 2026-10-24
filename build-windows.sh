@@ -33,7 +33,7 @@ for library in et uuid blkid ext2fs; do
   run_build_step "Building e2fsprogs library: $library (4 parallel jobs)" "$build/build.log" \
     make -j4 -C "lib/$library" all
 done
-for unit in menu_entries config_reader main grubenv ext4_reader windows_reader discovery; do
+for unit in path_probe menu_entries config_reader main grubenv ext4_reader windows_reader discovery; do
   run_build_step "Compiling $unit.c" "$build/build.log" \
     "$compiler" -std=c11 -Wall -Wextra -Werror -O2 \
     -I"$build/lib" -I"$source_dir/lib" \
@@ -41,7 +41,7 @@ for unit in menu_entries config_reader main grubenv ext4_reader windows_reader d
 done
 run_build_step 'Linking grub-set-default.exe' "$build/build.log" \
   "$compiler" -static -o "$project/dist/grub-set-default.exe" \
-  menu_entries.o config_reader.o main.o grubenv.o ext4_reader.o windows_reader.o discovery.o \
+  path_probe.o menu_entries.o config_reader.o main.o grubenv.o ext4_reader.o windows_reader.o discovery.o \
   lib/libext2fs.a lib/libcom_err.a lib/libuuid.a -lrpcrt4 -lsetupapi -lwinpthread
 printf '\n==> Checking Windows DLL imports\n'
 x86_64-w64-mingw32-objdump -p "$project/dist/grub-set-default.exe" \

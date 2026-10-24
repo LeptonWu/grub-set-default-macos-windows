@@ -46,9 +46,25 @@ Setting a default asks for confirmation, including for dry runs, unless `--yes`
 is supplied. Read-only listing does not ask for write confirmation. The program
 never reboots. Setting a default requires an existing, valid, traditional
 1024-byte grubenv file. It does not create missing files or resize them.
-`--boot-directory DIR` (or `--boot-directory=DIR`) means a path **inside the
-selected ext4 partition**, default `/boot`, rather than a mounted host directory.
-Use `--boot-directory /` for a separate /boot partition with `/grub/grubenv`.
+By default, each eligible filesystem is probed for these layouts:
+
+```text
+/boot/grub/grubenv
+/boot/grub2/grubenv
+/grub/grubenv
+/grub2/grubenv
+```
+
+This covers GRUB files on the root filesystem or a separate `/boot` partition.
+A single valid match is selected automatically. Multiple matches, even on the
+same partition, require selection of a partition/path pair; no path gets silent
+preference. This also applies to images and explicitly selected partitions.
+
+`--boot-directory DIR` (or `--boot-directory=DIR`) restricts probing to the
+existing `DIR/grub/grubenv` convention. It means a path **inside the selected
+ext4 filesystem**, rather than a mounted host directory. For example,
+`--boot-directory /` restricts selection to `/grub/grubenv`; it does not select
+`/grub2/grubenv`. Omit the option to discover `grub2` layouts automatically.
 GNU's deprecated `--root-directory` option is not implemented.
 
 ## Choose the next boot without changing the permanent default
@@ -87,9 +103,11 @@ variable update as GNU `grub-reboot`. GNU's tool restores a nonempty legacy
 
 `--yes` (or `-y`) skips confirmation for persistent-default and next-boot changes,
 including dry runs. Backups, validation, locking, flush and verification still
-apply. It never reboots. If multiple partitions match, it fails with a nonzero
-exit status instead of choosing a target or prompting. Use an explicit device
-or partition UUID for repeatable scripts.
+apply. It never reboots. If multiple partition/path pairs match, it fails with a
+nonzero exit status instead of choosing a target or prompting. An explicit
+device or partition UUID restricts the partition, but multiple layouts on that
+partition still count as ambiguous. `--boot-directory` can further restrict
+selection to a specific traditional `grub` layout.
 
 ```sh
 # macOS: substitute your partition UUID and menu entry
@@ -141,10 +159,10 @@ Administrator terminal. Both versions also accept `--image FILE` for testing
 without administrative privileges. Do not provide a menu entry argument or
 combine listing with `--scan` or `--dry-run`.
 
-This mode reads `/boot/grub/grub.cfg` directly from ext4, independently of
-grubenv. It does not open the target for writing, create backups, change the
-default, or reboot. If several partitions contain a config, choose a partition
-from the discovery results. `--boot-directory DIR` also applies to listing;
+This mode probes for the sibling `grub.cfg` in each common layout directly on
+ext4, independently of grubenv. It does not open the target for writing, create
+backups, change the default, or reboot. If several layouts contain a config,
+choose a partition/path pair from the discovery results. `--boot-directory DIR` also applies to listing;
 use `--boot-directory /` to read `/grub/grub.cfg` on a separate /boot partition.
 
 Example output:
@@ -168,7 +186,7 @@ Malformed or unsupported syntax can return an error after a partial listing.
 
 ## Discovery and explicit targets
 
-Both platforms offer `--scan` to list candidates without changing anything,
+Both platforms offer `--scan` to list partition/path pairs without changing anything,
 and `--partition-guid UUID` to restrict discovery. One candidate is selected
 for inspection; multiple candidates require a choice before final confirmation,
 or cause an error when `--yes` is used.
@@ -282,7 +300,7 @@ ext4 filesystem. This mode needs no administrator/root privileges:
 ./dist/grub-set-default --image /path/to/ext4-partition.img --dry-run 0
 ```
 
-Use a disposable image containing an existing `/boot/grub/grubenv` file.
+Use a disposable image containing an existing grubenv in a supported layout.
 On Windows, use `grub-set-default.exe` with the same options.
 Windows image mode requires a normal local file path shorter than MAX_PATH.
 Long/extended and UNC image paths are not supported.

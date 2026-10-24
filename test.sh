@@ -40,7 +40,7 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
 ASAN_OPTIONS=detect_leaks=0 ./test-windows-reader
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
   -I"$project/tests/fake_win32" -I"$project" -I"$host/lib" -I"$source_dir/lib" \
-  "$project/discovery.c" "$project/grubenv.c" "$project/tests/test_discovery.c" -o test-discovery
+  "$project/discovery.c" "$project/path_probe.c" "$project/grubenv.c" "$project/tests/test_discovery.c" -o test-discovery
 ASAN_OPTIONS=detect_leaks=0 ./test-discovery
 cc -std=c11 -Wall -Wextra -Werror -O2 \
   -I"$project" -I"$host/lib" -I"$source_dir/lib" \
@@ -52,7 +52,7 @@ MKE2FS_CONFIG="$host/misc/mke2fs.conf" python3 "$project/tests/integration.py" \
 # POSIX read adapter. This exercises the write path without physical devices.
 cc -std=c11 -Wall -Wextra -Werror -O2 -DGRUB_USE_POSIX_READER \
   -I"$project" -I"$host/lib" -I"$source_dir/lib" \
-  "$project/config_reader.c" "$project/menu_entries.c" "$project/posix_main.c" "$project/posix_reader.c" "$project/posix_flush.c" "$project/ext4_reader.c" "$project/grubenv.c" \
+  "$project/path_probe.c" "$project/config_reader.c" "$project/menu_entries.c" "$project/posix_main.c" "$project/posix_reader.c" "$project/posix_flush.c" "$project/ext4_reader.c" "$project/grubenv.c" \
   lib/libext2fs.a lib/libcom_err.a lib/libuuid.a -lpthread -o grub-set-default
 MKE2FS_CONFIG="$host/misc/mke2fs.conf" python3 "$project/tests/cli_integration.py" \
   "$host/misc/mke2fs" "$host/debugfs/debugfs" "$host/grub-set-default"

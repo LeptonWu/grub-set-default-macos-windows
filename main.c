@@ -41,12 +41,12 @@ static void usage(void)
          "  -y, --yes                 Skip confirmation; fail if target selection is ambiguous\n"
          "  --show-default            Show stored GRUB defaults (read-only)\n"
          "  --list-entries            List static grub.cfg menu definitions (read-only)\n"
-         "  --scan                    List matching Linux GPT partitions\n"
+         "  --scan                    List matching Linux GPT partition/path pairs\n"
          "  --disk N                  Restrict discovery to disk N\n"
          "  --partition N --partition-guid UUID  Select an explicit GPT partition\n"
          "  --partition-guid UUID     Restrict discovery by partition UUID\n"
          "  --image FILE              Use a partition-only ext4 image\n"
-         "  --boot-directory DIR      Look for DIR/grub/grubenv (default /boot)\n"
+         "  --boot-directory DIR      Restrict to DIR/grub/grubenv; default: probe common layouts\n"
          "  -h, --help                Show this help\n"
          "  -V, --version             Show version\n"
          "Requires GRUB_DEFAULT=saved in the existing GRUB configuration.\n"
@@ -104,7 +104,6 @@ static int parse_options(int argc, char **argv, struct options *options)
 {
     int i;
     memset(options, 0, sizeof(*options));
-    strcpy(options->env_path, "/boot/grub/grubenv");
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (!strcmp(arg, "--dry-run")) options->dry_run = 1;
@@ -169,14 +168,14 @@ static int discover_target(struct options *options)
     filter.have_disk = options->have_disk; filter.disk = options->disk;
     filter.have_partition = options->have_partition; filter.partition = options->partition;
     filter.have_guid = options->have_guid; filter.guid = options->guid;
-    printf("Scanning Linux GPT partitions for ext4 and %s...\n", options->list_entries ? "grub.cfg" : options->env_path);
+    printf("Scanning Linux GPT partitions for ext4 and %s...\n", options->list_entries ? "grub.cfg layouts" : "grubenv layouts");
     ok = grub_discover(&filter, &items, &count);
     for (i = 0; i < count; i++) {
         guid_text(&items[i].guid, guid);
-        if (options->list_entries) printf("[%zu] Disk %u partition %u, GUID %s, grub.cfg found\n",
-                i + 1, items[i].disk, items[i].partition, guid);
-        else printf("[%zu] Disk %u partition %u, GUID %s, saved_entry=%s\n",
-                i + 1, items[i].disk, items[i].partition, guid, items[i].change.current);
+        if (options->list_entries) printf("[%zu] Disk %u partition %u, GUID %s, %s (grub.cfg found)\n",
+                i + 1, items[i].disk, items[i].partition, guid, items[i].env_path);
+        else printf("[%zu] Disk %u partition %u, GUID %s, %s, saved_entry=%s\n",
+                i + 1, items[i].disk, items[i].partition, guid, items[i].env_path, items[i].change.current);
     }
     if (!ok) { free(items); return 0; }
     if (!count) {
@@ -186,11 +185,11 @@ static int discover_target(struct options *options)
     if (options->scan_only) { free(items); return 2; }
     if (count > 1 && options->yes) {
         free(items);
-        fputs("Multiple matching partitions; --yes requires a unique target. Use --partition-guid or --disk with --partition and --partition-guid.\n", stderr);
+        fputs("Multiple matching GRUB targets; --yes requires a unique target. Restrict the partition or use --boot-directory.\n", stderr);
         return 0;
     }
     if (count > 1) {
-        printf("Choose a partition [1-%zu], or press Enter to cancel: ", count);
+        printf("Choose a GRUB target [1-%zu], or press Enter to cancel: ", count);
         fflush(stdout);
         if (!fgets(answer, sizeof(answer), stdin)) { free(items); return 2; }
         answer[strcspn(answer, "\r\n")] = 0;
@@ -200,10 +199,11 @@ static int discover_target(struct options *options)
             free(items); return 0;
         }
         selected = choice - 1;
-    } else puts("Found one matching partition; selecting it for inspection.");
+    } else puts("Found one matching GRUB target; selecting it for inspection.");
     options->disk = items[selected].disk;
     options->partition = items[selected].partition;
     options->guid = items[selected].guid;
+    strcpy(options->env_path, items[selected].env_path);
     options->have_disk = options->have_partition = options->have_guid = 1;
     free(items);
     return 1;
@@ -267,7 +267,7 @@ static int backup_file(const char *directory, const char *name, const void *data
     return ok;
 }
 
-static int make_backup(const char *device, const struct grub_location *location,
+static int make_backup(const char *device, const char *env_path, const struct grub_location *location,
                        const unsigned char *replacement, const struct grub_change *change,
                        int next_boot, char directory[MAX_PATH])
 {
@@ -282,9 +282,9 @@ static int make_backup(const char *device, const struct grub_location *location,
     }
     printf("Backup directory: %s\n", directory);
     count = snprintf(metadata, sizeof(metadata),
-             "device=%s\nblock_size=%" PRIu32 "\nblock_number=%" PRIu64
+             "device=%s\nenv_path=%s\nblock_size=%" PRIu32 "\nblock_number=%" PRIu64
              "\npartition_relative_offset=%" PRIu64 "\nvariable=%s\nfrom=%s\nto=%s\n",
-             device, location->block_size, location->block_number,
+             device, env_path, location->block_size, location->block_number,
              location->byte_offset, next_boot ? "next_entry" : "saved_entry", change->current, change->target);
     if (count < 0 || count >= (int)sizeof(metadata)) return 0;
     return backup_file(directory, "original-block.bin", location->block, location->block_size) &&
@@ -374,6 +374,13 @@ int main(int argc, char **argv)
     } else if (!partition_identity(handle, &options.guid, &device_size)) goto out;
     CloseHandle(handle); handle = INVALID_HANDLE_VALUE;
 
+    /* Auto-discovery already selected an exact partition/path pair. Explicit
+     * partitions and images still need common-layout probing when unrestricted. */
+    if (!*options.env_path) {
+        parsed = grub_select_path(device, options.env_path, options.list_entries, options.yes);
+        if (parsed != 1) { status = parsed == 2 ? 0 : 1; goto out; }
+    }
+
     if (options.list_entries) {
         if (!grub_list_config(device, options.env_path, stdout, error, sizeof(error))) {
             fprintf(stderr, "%s\n", error); goto out;
@@ -409,7 +416,7 @@ int main(int argc, char **argv)
     else if (change.cleared_next_entry || change.cleared_prev_saved_entry)
         puts("Will remove next_entry and prev_saved_entry if present, like GNU grub-set-default.");
     grub_progress("Saving backup files...");
-    if (!make_backup(device, &location, replacement, &change, options.next_boot, backup)) goto out;
+    if (!make_backup(device, options.env_path, &location, replacement, &change, options.next_boot, backup)) goto out;
     if (options.yes) puts("Confirmation accepted (--yes).");
     else if (!confirm(options.dry_run, options.next_boot, &change)) {
         puts("Cancelled. No disk writes performed."); status = 0; goto out;
