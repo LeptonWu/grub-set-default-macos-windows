@@ -90,6 +90,48 @@ with tempfile.TemporaryDirectory() as temporary:
     result = call("--image", str(image), "2", answer="", env=env)
     assert result.returncode == 0 and image.read_bytes() == pristine
     clean()
+    # --yes/-y must work without input for both persistent and next-boot writes.
+    for yes_flag in ("--yes", "-y"):
+        for mode in ((), ("--next-boot",)):
+            image.write_bytes(pristine)
+            result = call("--image", str(image), yes_flag, *mode, "--dry-run", "opencore", answer="", env=env)
+            assert result.returncode == 0 and "Dry run" in result.stdout, result
+            assert "[y/N]" not in result.stdout and image.read_bytes() == pristine
+            clean()
+            result = call("--image", str(image), yes_flag, *mode, "opencore", answer="", env=env)
+            assert result.returncode == 0 and "Verified" in result.stdout, result
+            assert "[y/N]" not in result.stdout and "Confirmation accepted (--yes)" in result.stdout
+            actual = image.read_bytes()
+            if mode:
+                expected = b"# GRUB Environment Block\nsaved_entry=0\nnext_entry=opencore\nrecordfail=1\ncustom=a=b#c\n"
+            else:
+                expected = b"# GRUB Environment Block\nsaved_entry=opencore\nrecordfail=1\ncustom=a=b#c\n"
+            assert actual[offset:offset + 1024] == expected + b"#" * (1024 - len(expected))
+            assert actual[:offset] == pristine[:offset] and actual[offset + 1024:] == pristine[offset + 1024:]
+            clean()
+            result = call("--image", str(image), yes_flag, *mode, "opencore", answer="", env=env)
+            assert result.returncode == 0 and "Already set" in result.stdout, result
+            assert "[y/N]" not in result.stdout and image.read_bytes() == actual
+            clean()
+            result = call("--image", str(image), yes_flag, "--show-default", answer="", env=env)
+            assert result.returncode == 0 and "[y/N]" not in result.stdout
+            assert image.read_bytes() == actual
+            clean()
+    image.write_bytes(pristine)
+    # Confirmation bypass must not bypass file/entry/environment validation.
+    for args in (("--boot-directory", "/missing", "opencore"), ("bad\nentry",), ("x" * 1024,)):
+        result = call("--image", str(image), "--yes", *args, answer="", env=env)
+        assert result.returncode != 0 and image.read_bytes() == pristine, result
+        clean()
+    for mode in ((), ("--next-boot",)):
+        with image.open("r+b") as f:
+            f.seek(offset)
+            f.write(b"malformed\n" + b"#" * (1024 - 10))
+        before = image.read_bytes()
+        result = call("--image", str(image), "--yes", *mode, "opencore", answer="", env=env)
+        assert result.returncode != 0 and image.read_bytes() == before, result
+        clean()
+    image.write_bytes(pristine)
     # Next-boot selection uses the same confirmation and cleanup rules.
     for flags, answer in ((("--dry-run",), "y\n"), ((), "n\n"), ((), "")):
         result = call("--image", str(image), "--next-boot", *flags, "opencore", answer=answer, env=env)
@@ -212,7 +254,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert result.returncode != 0 and "listing may be incomplete" in result.stderr, result
     assert image.read_bytes() == before
     clean()
-print("Passed CLI image tests: next-boot selection and GNU grub-reboot compatibility, dry-run confirmation, cancellation/EOF, explicit entries, "
+print("Passed CLI image tests: unattended --yes/-y writes, previews, no-op and validation, next-boot selection and GNU grub-reboot compatibility, dry-run confirmation, cancellation/EOF, explicit entries, "
       "idempotence, GNU compatibility, preserved bytes, cleanup, read-only menu listing "
       "without grubenv, read-only stored defaults without grub.cfg, separate-boot paths, "
       "and malformed config/argument rejection.")

@@ -23,7 +23,7 @@
 
 struct options {
     unsigned int disk, partition;
-    int have_disk, have_partition, have_guid, dry_run, scan_only, list_entries, show_default, next_boot;
+    int have_disk, have_partition, have_guid, dry_run, scan_only, list_entries, show_default, next_boot, yes;
     GUID guid;
     const char *image;
     const char *entry;
@@ -38,6 +38,7 @@ static void usage(void)
          "Set the persistent GRUB default by number, title, or menu ID.\n"
          "  --dry-run                 Preview and confirm without writing\n"
          "  --next-boot               Set next_entry for the next boot; preserve saved_entry\n"
+         "  -y, --yes                 Skip confirmation; fail if target selection is ambiguous\n"
          "  --show-default            Show stored GRUB defaults (read-only)\n"
          "  --list-entries            List static grub.cfg menu definitions (read-only)\n"
          "  --scan                    List matching Linux GPT partitions\n"
@@ -51,7 +52,8 @@ static void usage(void)
          "Requires GRUB_DEFAULT=saved in the existing GRUB configuration.\n"
          "Persistent mode clears next_entry and prev_saved_entry, preserving other variables.\n"
          "Next-boot mode clears prev_saved_entry; GRUB must consume and clear next_entry.\n"
-         "Setting a default requires confirmation, including for a dry run. No reboot performed.\n"
+         "Setting a default requires confirmation unless --yes is used, including for dry runs.\n"
+         "No reboot performed.\n"
          "Raw partition access requires an Administrator terminal.");
 }
 
@@ -106,6 +108,7 @@ static int parse_options(int argc, char **argv, struct options *options)
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (!strcmp(arg, "--dry-run")) options->dry_run = 1;
+        else if (!strcmp(arg, "--yes") || !strcmp(arg, "-y")) options->yes = 1;
         else if (!strcmp(arg, "--next-boot")) { if (options->next_boot) return 0; options->next_boot = 1; }
         else if (!strcmp(arg, "--scan")) options->scan_only = 1;
         else if (!strcmp(arg, "--list-entries")) options->list_entries = 1;
@@ -181,6 +184,11 @@ static int discover_target(struct options *options)
         free(items); return options->scan_only ? 2 : 0;
     }
     if (options->scan_only) { free(items); return 2; }
+    if (count > 1 && options->yes) {
+        free(items);
+        fputs("Multiple matching partitions; --yes requires a unique target. Use --partition-guid or --disk with --partition and --partition-guid.\n", stderr);
+        return 0;
+    }
     if (count > 1) {
         printf("Choose a partition [1-%zu], or press Enter to cancel: ", count);
         fflush(stdout);
@@ -402,7 +410,8 @@ int main(int argc, char **argv)
         puts("Will remove next_entry and prev_saved_entry if present, like GNU grub-set-default.");
     grub_progress("Saving backup files...");
     if (!make_backup(device, &location, replacement, &change, options.next_boot, backup)) goto out;
-    if (!confirm(options.dry_run, options.next_boot, &change)) {
+    if (options.yes) puts("Confirmation accepted (--yes).");
+    else if (!confirm(options.dry_run, options.next_boot, &change)) {
         puts("Cancelled. No disk writes performed."); status = 0; goto out;
     }
     if (options.dry_run) {

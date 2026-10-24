@@ -29,7 +29,7 @@
 struct options {
     const char *entry, *image, *device, *guid;
     char env_path[1024];
-    int scan, dry, list, show_default, next_boot;
+    int scan, dry, list, show_default, next_boot, yes;
 };
 struct candidate { char device[PATH_MAX], uuid[128], current[GRUB_ENV_SIZE]; };
 static void usage(void)
@@ -47,11 +47,12 @@ static void usage(void)
          "  --boot-directory DIR   Locate DIR/grub/grubenv inside ext4 (default /boot)\n"
          "  --dry-run              Preview and confirm without writing\n"
          "  --next-boot            Set next_entry for the next boot; preserve saved_entry\n"
+         "  -y, --yes              Skip confirmation; fail if target selection is ambiguous\n"
          "  -h, --help             Show help\n"
          "  -V, --version          Show version\n"
          "Persistent mode clears next_entry and prev_saved_entry like GNU grub-set-default.\n"
          "Next-boot mode clears prev_saved_entry; GRUB must consume and clear next_entry.\n"
-         "Setting a default requires confirmation. No reboot performed.\n"
+         "Setting a default requires confirmation unless --yes is used. No reboot performed.\n"
          "Raw partition access requires root; filesystem must be clean and unmounted.");
 }
 static int parse(int argc, char **argv, struct options *o)
@@ -63,6 +64,7 @@ static int parse(int argc, char **argv, struct options *o)
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 2; }
         else if (!strcmp(a, "--version") || !strcmp(a, "-V")) { puts("grub-set-default (raw ext4 edition) 2.0"); return 2; }
         else if (!strcmp(a, "--dry-run")) o->dry = 1;
+        else if (!strcmp(a, "--yes") || !strcmp(a, "-y")) o->yes = 1;
         else if (!strcmp(a, "--next-boot")) { if (o->next_boot) return 0; o->next_boot = 1; }
         else if (!strcmp(a, "--scan")) o->scan = 1;
         else if (!strcmp(a, "--list-entries")) o->list = 1;
@@ -241,6 +243,11 @@ static int discover(const struct options *o, char path[PATH_MAX], char uuid[128]
     if (incomplete) { free(items); fputs("Incomplete partition scan; no target selected.\n", stderr); return 0; }
     if (o->scan) { free(items); return 2; }
     if (!count) { free(items); fputs("No matching partition found.\n", stderr); return 0; }
+    if (count > 1 && o->yes) {
+        free(items);
+        fputs("Multiple matching partitions; --yes requires a unique target. Use --device or --partition-guid.\n", stderr);
+        return 0;
+    }
     if (count > 1) {
         char *end;
         unsigned long choice;
@@ -378,10 +385,13 @@ int main(int argc, char **argv)
     if (!save_file(backup, "original-block.bin", loc.block, loc.block_size) ||
         !save_file(backup, "replacement-block.bin", replacement, loc.block_size) ||
         !save_file(backup, "location.txt", metadata, strlen(metadata))) { perror("Save backups"); goto out; }
-    printf("%sSet GRUB %s to '%s'? [y/N] ", o.dry ? "Dry run: " : "", o.next_boot ? "next boot" : "default", change.target); fflush(stdout);
-    if (!fgets(answer, sizeof(answer), stdin)) answer[0] = 0;
-    answer[strcspn(answer, "\r\n")] = 0;
-    if (strcasecmp(answer, "y") && strcasecmp(answer, "yes")) { puts("Cancelled. No writes performed."); status = 0; goto out; }
+    if (o.yes) puts("Confirmation accepted (--yes).");
+    else {
+        printf("%sSet GRUB %s to '%s'? [y/N] ", o.dry ? "Dry run: " : "", o.next_boot ? "next boot" : "default", change.target); fflush(stdout);
+        if (!fgets(answer, sizeof(answer), stdin)) answer[0] = 0;
+        answer[strcspn(answer, "\r\n")] = 0;
+        if (strcasecmp(answer, "y") && strcasecmp(answer, "yes")) { puts("Cancelled. No writes performed."); status = 0; goto out; }
+    }
     if (o.dry) { puts("Dry run confirmed. No writes performed."); status = 0; goto out; }
     if (!change.changed) { puts("Already set. No writes needed."); status = 0; goto out; }
     grub_progress("Rechecking the target and original file before writing...");

@@ -42,8 +42,8 @@ and the selected target. Reads report which GRUB file is being inspected; writes
 report backup, recheck, write, cache-flush and verification stages. These are
 console diagnostics; read-only operations still do not flush or write the disk.
 
-Unlike GNU's tool, setting a default always asks for confirmation, including
-for dry runs. Read-only listing does not ask for write confirmation. The program
+Setting a default asks for confirmation, including for dry runs, unless `--yes`
+is supplied. Read-only listing does not ask for write confirmation. The program
 never reboots. Setting a default requires an existing, valid, traditional
 1024-byte grubenv file. It does not create missing files or resize them.
 `--boot-directory DIR` (or `--boot-directory=DIR`) means a path **inside the
@@ -82,6 +82,28 @@ variable update as GNU `grub-reboot`. GNU's tool restores a nonempty legacy
 `prev_saved_entry` into `saved_entry`; this option instead preserves the current
 `saved_entry` and removes the legacy override. A later persistent-default command
 (without `--next-boot`) clears `next_entry` as usual.
+
+## Unattended use
+
+`--yes` (or `-y`) skips confirmation for persistent-default and next-boot changes,
+including dry runs. Backups, validation, locking, flush and verification still
+apply. It never reboots. If multiple partitions match, it fails with a nonzero
+exit status instead of choosing a target or prompting. Use an explicit device
+or partition UUID for repeatable scripts.
+
+```sh
+# macOS: substitute your partition UUID and menu entry
+sudo ./dist/grub-set-default --partition-guid YOUR-PARTITION-UUID --yes --next-boot opencore
+```
+
+```powershell
+# Windows: Administrator PowerShell
+.\grub-set-default.exe --partition-guid YOUR-PARTITION-UUID --yes 2
+```
+
+`--yes --dry-run` validates and previews without waiting for input or writing to
+the target. With read-only modes, `--yes` suppresses any interactive partition
+selection by rejecting ambiguity; `--scan` continues to list all matches.
 
 ## Show the current stored default
 
@@ -148,7 +170,8 @@ Malformed or unsupported syntax can return an error after a partial listing.
 
 Both platforms offer `--scan` to list candidates without changing anything,
 and `--partition-guid UUID` to restrict discovery. One candidate is selected
-for inspection; multiple candidates require a choice before final confirmation.
+for inspection; multiple candidates require a choice before final confirmation,
+or cause an error when `--yes` is used.
 
 Windows discovers currently present disks through SetupAPI and reads GPT
 partition tables. It checks common Linux filesystem/root/XBOOTLDR types and an
