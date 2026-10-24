@@ -1,0 +1,165 @@
+name: Build, test and package
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  PACKAGE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.sha }}
+
+jobs:
+  linux:
+    name: Linux tests and Windows x64 build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build and test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-mingw-w64-x86-64 python3 curl e2fsprogs grub-common grub2-common
+      - name: Build Windows executable
+        run: ./build-windows.sh
+      - name: Run host tests
+        run: ./test.sh
+      - name: Prepare native Windows image tests
+        env:
+          MKE2FS_CONFIG: ${{ github.workspace }}/build/host-tests/misc/mke2fs.conf
+        run: |
+          python3 ci/create_fixture.py build/host-tests/misc/mke2fs build/host-tests/debugfs/debugfs build/windows-fixture
+          python3 ci/windows_smoke.py --program build/host-tests/grub-set-default --fixture build/windows-fixture
+      - name: Package Windows executable and rebuild sources
+        run: python3 ci/package.py --platform windows-x86_64 --version "$PACKAGE_VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-windows-x86_64
+          path: dist/packages/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-image-fixture
+          path: build/windows-fixture/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Save build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-linux
+          path: |
+            build/windows/*.log
+            build/host-tests/*.log
+          retention-days: 7
+
+  macos:
+    name: macOS ${{ matrix.arch }} build and native image tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build native executable
+        run: ./build-macos.sh
+      - name: Run native tests on disposable images
+        run: ./test-macos.sh
+      - name: Package executable and rebuild sources
+        if: matrix.arch == 'x86_64'
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$BUILD_ARCH"
+          python3 ci/package.py --platform "macos-$BUILD_ARCH" --version "$PACKAGE_VERSION"
+      - uses: actions/upload-artifact@v7
+        if: matrix.arch == 'x86_64'
+        with:
+          name: package-macos-${{ matrix.arch }}
+          path: dist/packages/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-macos-${{ matrix.arch }}
+          path: build/macos/*.log
+          retention-days: 7
+
+  windows:
+    name: Native Windows x64 image tests
+    needs: linux
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-windows-x86_64
+          path: packages
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-image-fixture
+          path: fixture
+      - name: Test packaged executable without physical disks
+        run: python ci/windows_smoke.py --packages packages --fixture fixture
+
+  release:
+    name: Publish tagged release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-windows-x86_64
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-macos-x86_64
+          path: release-assets
+      - name: Verify and publish packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release-assets
+          sha256sum --check ./*.sha256
+          cat ./*.sha256 > SHA256SUMS
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "$RELEASE_TAG" "${flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" ./* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"

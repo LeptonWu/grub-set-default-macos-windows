@@ -325,6 +325,55 @@ The Linux image tests exercise the shared core and POSIX front end; platform
 mocks do not exercise real Windows device APIs or Apple's diskutil and
 CoreFoundation APIs.
 
+## CI builds and downloadable packages
+
+The GitHub Actions workflow runs on branch pushes, pull requests, `v*` tag
+pushes, and manual runs from the Actions tab. It performs:
+
+* Linux host tests and cross-compilation of the Windows x64 executable.
+* Native macOS builds and disposable-image tests on Intel and Apple Silicon.
+* Native Windows tests of the packaged executable using a disposable image.
+
+No physical disks are accessed by these tests. Windows x64 and Intel macOS builds
+upload packages under the workflow run's **Artifacts** section. Apple Silicon
+is build/test-only: CI does not package or publish an ARM64 macOS binary.
+Packages are kept for 14 days;
+build logs are kept for 7 days. Windows packages are ZIP files; Mac packages
+are tar.gz files that preserve executable permissions. Each includes the binary,
+README, licenses, and complete project and e2fsprogs source archives for rebuilding.
+A separate SHA-256 checksum accompanies each package. A Windows preview can be
+generated locally after building:
+
+```sh
+python3 ci/package.py --platform windows-x86_64 --version dev-preview
+```
+
+On a Mac, use `--platform macos-x86_64` or `--platform macos-arm64` to match
+the built binary. Packages are written to `dist/packages/`.
+
+After `./build-macos.sh`, run the native Mac tests with:
+
+```sh
+./test-macos.sh
+```
+
+To publish a version, commit and push the workflow and project first, then
+create and push a version tag, for example:
+
+```sh
+git tag v2.0.0
+git push origin v2.0.0
+```
+
+Only after all platform jobs succeed does the workflow create a GitHub Release
+and attach the Windows x64 and Intel macOS packages and `SHA256SUMS`.
+The release job explicitly downloads only those two packages. ARM64 macOS is
+excluded from releases. Tags containing a hyphen
+(such as `v2.0.0-rc1`) produce prereleases. An ordinary push or manual run does
+not publish a release. No personal access token is needed: the release job uses
+GitHub's built-in token with `contents: write`; build/test jobs have read-only
+repository access. The binaries are not notarized or Authenticode-signed.
+
 ## Source and licensing
 
 The source uses [e2fsprogs](https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git/)
